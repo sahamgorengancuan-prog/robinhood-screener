@@ -21,6 +21,7 @@ from app.config import Settings
 from app.models import Alert
 from app.schemas import Decision, DecisionState, NormalizedSnapshot
 from app.alerts.formatter import build_body, build_payload, build_title, dedupe_key
+from app.util.console import safe
 
 log = logging.getLogger(__name__)
 
@@ -35,7 +36,9 @@ def should_alert(decision: Decision, c: Settings) -> bool:
 
 
 async def _send_console(title: str, body: str) -> bool:
-    print("\n" + body + "\n", flush=True)
+    # Alert bodies contain arrows and box characters; a default Windows console
+    # cannot encode them and would raise mid-cycle.
+    print("\n" + safe(body) + "\n", flush=True)
     return True
 
 

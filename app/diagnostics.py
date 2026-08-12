@@ -62,11 +62,22 @@ class CheckResult:
 
     @property
     def icon(self) -> str:
+        """Emoji in a browser or a UTF-8 terminal, ASCII on a legacy console."""
+        from app.util.console import status_icon
+
+        return status_icon(self.status)
+
+    @property
+    def emoji(self) -> str:
+        """Always the emoji — safe for HTML output, which is never cp1252."""
         return STATUS_ICON.get(self.status, "⚪")
 
-    def as_row(self) -> list[Any]:
-        lat = f"{self.latency_ms:.0f} ms" if self.latency_ms is not None else "—"
-        return [f"{self.icon} {self.status}", self.group, self.name, lat, self.summary, self.fix]
+    def as_row(self, use_emoji: bool = False) -> list[Any]:
+        """`use_emoji=True` for the browser, which is always UTF-8; the default
+        adapts to whatever the console can actually encode."""
+        lat = f"{self.latency_ms:.0f} ms" if self.latency_ms is not None else "-"
+        mark = self.emoji if use_emoji else self.icon
+        return [f"{mark} {self.status}", self.group, self.name, lat, self.summary, self.fix]
 
     def as_dict(self) -> dict[str, Any]:
         return {

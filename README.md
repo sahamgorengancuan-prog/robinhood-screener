@@ -13,27 +13,44 @@ Missing data is never treated as safe. A token that cannot be measured
 cannot be bought.
 ```
 
-**Status:** phases 0–3 built and tested (185 tests passing). Four metrics have
+**Status:** phases 0–3 built and tested (256 tests passing). Four metrics have
 gates but no wired data source yet — they block live buying rather than being
 scored around. See [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §B.
 
 ---
 
-## Quick start
+## Quick start (Windows)
+
+Double-click, in this order. No terminal needed.
+
+| | |
+|---|---|
+| **`setup.bat`** | once — installs everything and runs the tests |
+| **`run_pipeline.bat`** | **the one-click**: test APIs -> screen once -> show results |
+| **`start_ui.bat`** | the control panel in your browser |
+| **`EMERGENCY_STOP.bat`** | stops all order execution instantly (make a desktop shortcut) |
+
+Full walkthrough and troubleshooting: [`docs/WINDOWS.md`](docs/WINDOWS.md).
+
+<details>
+<summary>Linux / macOS</summary>
 
 ```bash
 make install && make init
-make ui          # http://127.0.0.1:7860 — start here
+make ui            # http://127.0.0.1:7860
+make once          # one screening cycle
 ```
+</details>
 
-The control panel's first tab tests every API and tells you what to fix.
-Everything else is reachable without credentials.
+Defaults are safe: `RUN_MODE=ALERT_ONLY`, no keys, no orders possible. The
+control panel's first tab tests every API and tells you what to fix.
 
 ---
 
 ## Table of contents
 
 0. [Control panel (Gradio UI)](#0-control-panel-gradio-ui)
+0b. [Windows launchers](#0b-windows-launchers)
 1. [Design & trade-offs](#1-design--trade-offs)
 2. [Architecture](#2-architecture)
 3. [Database schema](#3-database-schema)
@@ -136,6 +153,45 @@ no CDN theme), so running it does not announce itself.
 
 If you don't want the UI at all, drop the single `gradio` line from
 `requirements.txt` — nothing else depends on it.
+
+---
+
+## 0b. Windows launchers
+
+The deployment target is Windows, so every operation has a double-clickable
+entry point and there is no `make` in the loop.
+
+| File | Purpose |
+|---|---|
+| `setup.bat` | First-time install: venv, dependencies, `.env`, database, tests |
+| `run_pipeline.bat` | **One click** — checks APIs, runs one cycle, prints results |
+| `start_ui.bat` | Control panel, opens the browser for you |
+| `test_connection.bat` | Connection/API test only |
+| `run_api.bat` | Continuous mode (FastAPI + 5-minute scheduler) |
+| `EMERGENCY_STOP.bat` | Halts execution instantly — **no Python required** |
+| `resume_trading.bat` | Clears the stop, after you type `RESUME` |
+| `run_tests.bat` | Test suite |
+
+**The batch files are deliberately thin.** All real logic lives in
+`scripts/one_click.py`, which is tested; the `.bat` only finds Python, creates
+the venv, and calls it. Batch script is the one part of this project that cannot
+be executed on the machine it was written on, so there is as little of it as
+possible — and `tests/test_windows.py` asserts what can be checked statically:
+CRLF endings, no unescaped `&`, every `goto` target exists, every launcher
+`pause`s, and paths are anchored to `%~dp0`.
+
+Three Windows-specific behaviours worth knowing:
+
+- **Console encoding.** `cmd.exe` defaults to a legacy code page and raises
+  `UnicodeEncodeError` on emoji, which would kill a screening cycle mid-run.
+  Output is forced to UTF-8 and status icons fall back to ASCII
+  (`[+] [!] [x] [-]`) unless Windows Terminal or VS Code is detected, since the
+  classic console renders emoji as boxes even at code page 65001.
+- **CRLF is mandatory** for `.bat` and pinned in `.gitattributes`; `cmd.exe`
+  mis-parses `goto` labels in LF-only batch files.
+- **The one-click refuses to run unattended in real-money mode.** With
+  `RUN_MODE=LIVE` and `OKX_SIMULATED=false` it stops and demands you type
+  `LIVE`. A double-clicked icon must never be one click from spending money.
 
 ---
 
@@ -268,6 +324,7 @@ robinhood-screener/
 │   ├── schemas.py              # NormalizedSnapshot, GateResult, Decision
 │   ├── services.py             # client container
 │   ├── diagnostics.py          # connection & API checks (UI + CLI share these)
+│   ├── util/console.py         # Windows console encoding + ASCII fallback
 │   ├── main.py                 # FastAPI + dashboard
 │   ├── scheduler.py            # APScheduler wiring
 │   ├── clients/
@@ -298,13 +355,18 @@ robinhood-screener/
 │   │   ├── gradio_app.py       # 6-tab control panel
 │   │   └── theme.py            # styling, no external font/CDN requests
 │   └── util/reconcile.py       # multi-source price & liquidity policy
+├── setup.bat                   # Windows: first-time install
+├── run_pipeline.bat            # Windows: THE one-click
+├── start_ui.bat                # Windows: control panel
+├── EMERGENCY_STOP.bat          # Windows: halt execution (no Python needed)
 ├── scripts/
+│   ├── one_click.py            # all one-click logic (the .bat is a thin shell)
 │   ├── init_db.py
 │   ├── run_ui.py               # Gradio control panel
 │   ├── probe_endpoints.py      # same checks, in the terminal
 │   ├── run_once.py
 │   └── demo_alert.py           # offline sample alerts
-├── tests/                      # 185 tests
+├── tests/                      # 256 tests
 └── docs/
     ├── ENDPOINTS.md            # verified vs unverified matrix
     ├── ASSUMPTIONS.md          # what the system does NOT know
@@ -675,7 +737,14 @@ DECISION : WATCH
 
 ## 9. Runbook (local deployment)
 
-### Install
+### Install (Windows)
+
+Double-click **`setup.bat`**. It creates the virtualenv, installs everything,
+writes `.env`, builds the database and runs the tests. See
+[`docs/WINDOWS.md`](docs/WINDOWS.md) for prerequisites and troubleshooting.
+
+<details>
+<summary>Linux / macOS</summary>
 
 ```bash
 git clone <repo> && cd robinhood-screener
@@ -683,6 +752,7 @@ python3 -m venv .venv && source .venv/bin/activate
 make install
 make init                 # creates .env from template + builds the DB
 ```
+</details>
 
 ### Step 1 — see it work with no keys at all
 
@@ -756,6 +826,10 @@ Only after that behaves for a day: `OKX_SIMULATED=false`, smallest possible
 `POSITION_USD`.
 
 ### Kill switch
+
+**Windows: double-click `EMERGENCY_STOP.bat`.** Make a desktop shortcut before
+you need it — it uses no Python and no virtualenv, so it works when everything
+else is broken. `resume_trading.bat` clears it.
 
 ```bash
 make kill                 # touch KILL_SWITCH — instant, no restart
@@ -837,7 +911,7 @@ score. The four things most likely to bite you:
 ## Tests
 
 ```bash
-make test    # 185 tests
+make test    # 256 tests
 ```
 
 | File | Covers |
@@ -850,6 +924,7 @@ make test    # 185 tests
 | `test_metrics_and_reconcile.py` | HHI catches dispersed whales; median resists a manipulated source; liquidity reconciliation is pessimistic |
 | `test_diagnostics.py` | Checks never raise; unreachable hosts report FAIL with a fix; skips explain their consequence; diagnostics don't retry |
 | `test_ui.py` | Threshold lab agrees with the engine; every red flag rejects; overrides don't leak into global settings; the UI cannot place an order |
+| `test_windows.py` | `.bat` files are CRLF with no unescaped `&`, valid `goto` targets and a `pause`; blank `RH_CHAIN_ID` parses; `.env.example` loads; ASCII console fallback works; emergency stop needs no Python |
 
 ---
 

@@ -37,12 +37,12 @@ from app.diagnostics import (  # noqa: E402
     summarize_checks,
 )
 from app.logging_conf import configure_logging  # noqa: E402
-
-BOLD, DIM, RESET = "\033[1m", "\033[2m", "\033[0m"
+from app.util.console import bold, dim, init_console, safe  # noqa: E402
 
 
 async def main(address: str | None, as_json: bool) -> None:
     c = get_settings()
+    init_console()
     configure_logging("ERROR" if as_json else c.log_level)
     init_db()
 
@@ -52,26 +52,26 @@ async def main(address: str | None, as_json: bool) -> None:
         print(json.dumps([r.as_dict() for r in results], indent=2, default=str))
         return
 
-    print(f"\n{BOLD}{'=' * 78}{RESET}")
-    print(f"{BOLD}  CONNECTION & API PROBE{RESET}")
-    print(f"{DIM}  run_mode={c.run_mode}  okx_simulated={c.okx_simulated}"
-          f"  rh_data_enabled={c.rh_data_enabled}{RESET}")
-    print(f"{BOLD}{'=' * 78}{RESET}\n")
+    print("\n" + bold("=" * 78))
+    print(bold("  CONNECTION & API PROBE"))
+    print(dim(f"  run_mode={c.run_mode}  okx_simulated={c.okx_simulated}"
+              f"  rh_data_enabled={c.rh_data_enabled}"))
+    print(bold("=" * 78) + "\n")
 
     group = None
     for r in results:
         if r.group != group:
             group = r.group
-            print(f"\n{BOLD}{group}{RESET}")
-        lat = f"{r.latency_ms:>6.0f}ms" if r.latency_ms is not None else "      —"
-        print(f"  {r.icon} {r.status:<5} {lat}  {r.name:<22} {r.summary}")
+            print("\n" + bold(group))
+        lat = f"{r.latency_ms:>6.0f}ms" if r.latency_ms is not None else "      -"
+        print(safe(f"  {r.icon} {r.status:<5} {lat}  {r.name:<22} {r.summary}"))
         if r.fix:
-            print(f"          {DIM}→ {r.fix}{RESET}")
+            print(dim(safe(f"          -> {r.fix}")))
 
     # Observed field names are the whole point for the unverified endpoints.
-    print(f"\n{BOLD}{'-' * 78}{RESET}")
-    print(f"{BOLD}OBSERVED API FIELDS{RESET}  {DIM}(compare against the pick() candidates in app/clients/){RESET}")
-    print(f"{BOLD}{'-' * 78}{RESET}")
+    print("\n" + bold("-" * 78))
+    print(bold("OBSERVED API FIELDS") + dim("  (compare against the pick() candidates in app/clients/)"))
+    print(bold("-" * 78))
     any_fields = False
     for r in results:
         keys = r.detail.get("observed_keys")
@@ -84,16 +84,19 @@ async def main(address: str | None, as_json: bool) -> None:
             if r.detail.get("unparsed"):
                 print(f"    UNPARSED  : {', '.join(r.detail['unparsed'])}")
     if not any_fields:
-        print(f"\n  {DIM}No API returned a payload to inspect. Pass a token address to probe more.{RESET}")
+        print("\n" + dim("  No API returned a payload to inspect. Pass a token address to probe more."))
 
     counts = summarize_checks(results)
     kind, message = readiness(results)
-    print(f"\n{BOLD}{'=' * 78}{RESET}")
-    print(f"  🟢 {counts[OK]} ok   🟡 {counts[WARN]} warn   🔴 {counts[FAIL]} fail   ⚪ {counts[SKIP]} skip")
-    print(f"\n  {BOLD}{message}{RESET}")
-    print(f"\n  {DIM}Sources that failed report their metrics as UNAVAILABLE, which routes tokens")
-    print(f"  to WATCH — never to a buy. That is the intended degradation path.{RESET}")
-    print(f"{BOLD}{'=' * 78}{RESET}\n")
+    print("\n" + bold("=" * 78))
+    from app.util.console import status_icon
+
+    print(f"  {status_icon(OK)} {counts[OK]} ok   {status_icon(WARN)} {counts[WARN]} warn   "
+          f"{status_icon(FAIL)} {counts[FAIL]} fail   {status_icon(SKIP)} {counts[SKIP]} skip")
+    print("\n  " + bold(message))
+    print("\n" + dim("  Sources that failed report their metrics as UNAVAILABLE, which routes"))
+    print(dim("  tokens to WATCH - never to a buy. That is the intended degradation path."))
+    print(bold("=" * 78) + "\n")
 
     sys.exit(1 if kind == FAIL else 0)
 

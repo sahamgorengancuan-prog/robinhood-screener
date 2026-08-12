@@ -121,7 +121,7 @@ async def do_connection_test(address, rpc_url, okx_key, okx_secret, okx_pass, ok
         f"🔴 {counts[FAIL]} gagal &nbsp;·&nbsp; ⚪ {counts[SKIP]} dilewati"
     )
 
-    rows = [r.as_row() for r in results]
+    rows = [r.as_row(use_emoji=True) for r in results]
 
     # Only surface details that carry observed field names or a raw payload —
     # that is what you need to reconcile an unverified API contract.
@@ -130,7 +130,7 @@ async def do_connection_test(address, rpc_url, okx_key, okx_secret, okx_pass, ok
         if r.detail and any(k in r.detail for k in ("observed_keys", "parsed", "unparsed", "raw", "sample"))
     }
 
-    fixes = [f"**{r.icon} {r.name}** — {r.fix}" for r in results if r.fix]
+    fixes = [f"**{r.emoji} {r.name}** — {r.fix}" for r in results if r.fix]
     fix_md = "\n\n".join(fixes) if fixes else "_Tidak ada tindakan yang diperlukan._"
 
     return banner(kind, head), rows, details or {"info": "no field-mapping data returned"}, fix_md
@@ -869,6 +869,8 @@ def main() -> None:
     host = os.getenv("GRADIO_HOST", "127.0.0.1")
     port = int(os.getenv("GRADIO_PORT", "7860"))
     share = os.getenv("GRADIO_SHARE", "false").lower() == "true"
+    # start_ui.bat sets this so a double-click lands the user on the page.
+    inbrowser = os.getenv("GRADIO_INBROWSER", "false").lower() == "true"
 
     if host not in ("127.0.0.1", "localhost"):
         log.warning(
@@ -876,7 +878,9 @@ def main() -> None:
             "kill switch — put it behind a reverse proxy with auth, or bind to 127.0.0.1.", host
         )
 
-    build_ui().queue().launch(server_name=host, server_port=port, share=share, show_api=False)
+    build_ui().queue().launch(
+        server_name=host, server_port=port, share=share, show_api=False, inbrowser=inbrowser
+    )
 
 
 if __name__ == "__main__":

@@ -67,7 +67,8 @@ def test_check_result_row_shape():
 
 
 def test_row_handles_missing_latency():
-    assert CheckResult("x", "g", SKIP, "").as_row()[3] == "—"
+    # ASCII hyphen, not an em-dash: this string reaches a Windows console.
+    assert CheckResult("x", "g", SKIP, "").as_row()[3] == "-"
 
 
 def test_readiness_reports_not_ready_when_nothing_works():

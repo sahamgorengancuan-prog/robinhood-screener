@@ -3,8 +3,14 @@ from __future__ import annotations
 import logging
 import sys
 
+from app.util.console import init_console
+
 
 def configure_logging(level: str = "INFO") -> None:
+    # Must run before the first log record: on a default Windows console,
+    # logging a non-ASCII character otherwise raises UnicodeEncodeError.
+    init_console()
+
     root = logging.getLogger()
     if root.handlers:
         root.setLevel(level.upper())

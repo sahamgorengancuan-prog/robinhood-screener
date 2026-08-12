@@ -1,0 +1,15 @@
+# Windows batch files MUST keep CRLF line endings.
+# cmd.exe can mis-parse `goto` labels and parenthesised blocks in LF-only .bat
+# files, which fails in confusing, intermittent ways. Pin it here so a clone on
+# any platform still checks out working launchers.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Everything else is LF.
+*.py   text eol=lf
+*.md   text eol=lf
+*.sh   text eol=lf
+*.toml text eol=lf
+*.txt  text eol=lf
+Makefile text eol=lf
+.env.example text eol=lf

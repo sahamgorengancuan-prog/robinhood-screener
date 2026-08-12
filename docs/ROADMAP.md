@@ -63,7 +63,7 @@ backlog, with the reasoning for the order.
 | 3.4 | Pure order-safety checks | ✅ `execution/order_safety.py` |
 | 3.5 | Paper executor sharing the live code path | ✅ |
 | 3.6 | Live executor: 9 sequential guards, post-only only | ✅ |
-| 3.7 | 185 tests covering scoring, gates, decisions, order safety | ✅ |
+| 3.7 | 256 tests covering scoring, gates, decisions, order safety | ✅ |
 
 **Exit criteria:** 1 week of `PAPER` with `OKX_SIMULATED=true`, and every
 PAPER_BUY reviewed manually.
@@ -86,6 +86,26 @@ requests of its own.
 
 **Exit criteria:** the connection tab reports "Ready for PAPER" against your
 real endpoints.
+
+---
+
+## Phase 3.6 — Windows packaging ✅ built
+
+| Step | Deliverable | Status |
+|---|---|---|
+| 3.6.1 | One-click pipeline runner, logic in tested Python | ✅ `scripts/one_click.py` |
+| 3.6.2 | Double-clickable launchers for every operation | ✅ `*.bat` |
+| 3.6.3 | Emergency stop that needs no Python or venv | ✅ `EMERGENCY_STOP.bat` |
+| 3.6.4 | Console encoding fix + ASCII fallback for `cmd.exe` | ✅ `app/util/console.py` |
+| 3.6.5 | Static guards for batch pitfalls (CRLF, `&`, labels, `pause`) | ✅ `tests/test_windows.py` |
+| 3.6.6 | Typed confirmation before any unattended real-money run | ✅ |
+
+Batch script cannot be executed on the machine it was written on, so it is kept
+to "find Python, make a venv, call the tested script", and everything checkable
+statically is asserted in tests.
+
+**Exit criteria:** `setup.bat` then `run_pipeline.bat` on a clean Windows box
+completes without touching a terminal.
 
 ---
 

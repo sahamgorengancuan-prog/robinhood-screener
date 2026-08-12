@@ -177,6 +177,19 @@ class Settings(BaseSettings):
     def _upper(cls, v: str) -> str:
         return str(v).strip().upper()
 
+    @field_validator("rh_chain_id", mode="before")
+    @classmethod
+    def _blank_int_is_none(cls, v):
+        """`RH_CHAIN_ID=` (blank) means "not known yet", not a parse error.
+
+        The shipped .env.example leaves it empty on purpose — the chain ID is
+        meant to be read from the node with `eth_chainId` rather than guessed —
+        so an empty value has to be valid or the very first run crashes.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return None
+        return v
+
     @property
     def live_enabled(self) -> bool:
         return self.run_mode == "LIVE" and not self.kill_switch
