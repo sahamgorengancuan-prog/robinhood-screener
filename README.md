@@ -13,14 +13,27 @@ Missing data is never treated as safe. A token that cannot be measured
 cannot be bought.
 ```
 
-**Status:** phases 0–3 built and tested (148 tests passing). Four metrics have
+**Status:** phases 0–3 built and tested (185 tests passing). Four metrics have
 gates but no wired data source yet — they block live buying rather than being
 scored around. See [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §B.
 
 ---
 
+## Quick start
+
+```bash
+make install && make init
+make ui          # http://127.0.0.1:7860 — start here
+```
+
+The control panel's first tab tests every API and tells you what to fix.
+Everything else is reachable without credentials.
+
+---
+
 ## Table of contents
 
+0. [Control panel (Gradio UI)](#0-control-panel-gradio-ui)
 1. [Design & trade-offs](#1-design--trade-offs)
 2. [Architecture](#2-architecture)
 3. [Database schema](#3-database-schema)
@@ -32,6 +45,97 @@ scored around. See [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §B.
 9. [Runbook](#9-runbook-local-deployment)
 10. [Security](#10-security)
 11. [Assumptions & limits](#11-assumptions--limits)
+
+---
+
+## 0. Control panel (Gradio UI)
+
+```bash
+make ui                       # http://127.0.0.1:7860
+```
+
+Six tabs, ordered the way you actually use them.
+
+### 🩺 Koneksi & API Test
+
+The tab you use first and return to whenever a number looks wrong. It does more
+than report up/down:
+
+| Column | Why it's there |
+|---|---|
+| **Status** | 🟢 OK · 🟡 WARN · 🔴 FAIL · ⚪ SKIP |
+| **Latensi** | Distinguishes "working" from "barely working" |
+| **Ringkasan** | What actually came back |
+| **Tindakan** | The specific next step, not a generic error string |
+
+Three things make it genuinely useful rather than decorative:
+
+1. **It shows the field names each API really returned.** For the OKX and
+   Robinhood Data APIs — whose contracts this repo could not verify offline —
+   the panel reports `observed_keys`, which of our fields **parsed**, and which
+   are **unparsed**. That is exactly what you need to reconcile a parser against
+   a live API. Unparsed fields stay `None` and route tokens to WATCH; they never
+   become `0`.
+2. **It fails fast.** Diagnostics run with retries disabled and shortened
+   timeouts, so a dead endpoint reports in ~400ms instead of ~9s. The screening
+   loop still retries with backoff — different job, different tuning.
+3. **It translates results into capability**, not just status: *"Ready for
+   ALERT_ONLY"*, *"Ready for PAPER"*, or *"Not ready — every token will report
+   missing data and stay in WATCH."*
+
+Also on this tab: a one-click **RPC ping**, and a **test alert** that pushes a
+real message through every configured sink so you find out the webhook is wrong
+now rather than during a live signal.
+
+Credentials can be typed into the collapsible override panel to test them
+**before** committing them to `.env`. They live in process memory only and are
+never written to disk — saving a secret should be a deliberate act, not a side
+effect of a form.
+
+### 🎛️ Threshold Lab
+
+The most useful tab for learning the system. Move any slider — token metrics on
+the left, risk thresholds on the right — and the verdict, the 0–100 score
+breakdown and all 21 gate results recompute **instantly**. The result panel is
+sticky at the top, so you always see the effect of the slider you are dragging.
+
+It is fully offline and pure: no network, no database, no persistence. Use it to
+calibrate thresholds before copying them into `.env`, and to answer "why was
+this rejected?" by reproducing the token's metrics and watching which gate
+flips. It calls the same `evaluate_gates` / `score_snapshot` / `decide`
+functions as production — it is not a separate model that can drift.
+
+### 🔬 Token Inspector
+
+Paste a contract address and it runs the full pipeline for that one token:
+collect → normalize → 21 gates → score → decision, plus the rendered alert and a
+provenance panel showing which source produced each field and what was missing.
+**Read-only** — it writes no rows and creates no orders.
+
+### 📊 Screener · 🛡️ Risiko & Order · ⚙️ Konfigurasi
+
+Ranked results with per-component score columns and state filters; a cycle
+trigger; the kill switch with live exposure counters and the order ledger; and
+the effective configuration with every secret redacted.
+
+### Two deliberate omissions
+
+- **There is no "place order" button.** Orders may only originate from a
+  decision that passed the gates. The UI can *stop* trading; it cannot *start* a
+  trade. A test asserts the UI module never calls the execution functions.
+- **Configuration is read-only in the UI.** Risk limits are changed by editing
+  `.env` and restarting, so they cannot be loosened from a browser tab.
+
+### Security
+
+The UI binds to `127.0.0.1` by default and has **no authentication** — it can
+engage and release the kill switch. Put it behind an authenticating reverse
+proxy before binding it anywhere else; it logs a warning if you change
+`GRADIO_HOST`. It also makes no outbound requests of its own (local font stack,
+no CDN theme), so running it does not announce itself.
+
+If you don't want the UI at all, drop the single `gradio` line from
+`requirements.txt` — nothing else depends on it.
 
 ---
 
@@ -163,6 +267,7 @@ robinhood-screener/
 │   ├── db.py                   # engine, WAL pragmas, session scope
 │   ├── schemas.py              # NormalizedSnapshot, GateResult, Decision
 │   ├── services.py             # client container
+│   ├── diagnostics.py          # connection & API checks (UI + CLI share these)
 │   ├── main.py                 # FastAPI + dashboard
 │   ├── scheduler.py            # APScheduler wiring
 │   ├── clients/
@@ -189,13 +294,17 @@ robinhood-screener/
 │   ├── alerts/
 │   │   ├── formatter.py        # human + machine payloads
 │   │   └── sinks.py            # console / file / webhook / telegram
+│   ├── ui/
+│   │   ├── gradio_app.py       # 6-tab control panel
+│   │   └── theme.py            # styling, no external font/CDN requests
 │   └── util/reconcile.py       # multi-source price & liquidity policy
 ├── scripts/
 │   ├── init_db.py
-│   ├── probe_endpoints.py      # RUN THIS FIRST
+│   ├── run_ui.py               # Gradio control panel
+│   ├── probe_endpoints.py      # same checks, in the terminal
 │   ├── run_once.py
 │   └── demo_alert.py           # offline sample alerts
-├── tests/                      # 148 tests
+├── tests/                      # 185 tests
 └── docs/
     ├── ENDPOINTS.md            # verified vs unverified matrix
     ├── ASSUMPTIONS.md          # what the system does NOT know
@@ -578,16 +687,22 @@ make init                 # creates .env from template + builds the DB
 ### Step 1 — see it work with no keys at all
 
 ```bash
+make ui                   # control panel — every tab works without credentials
 make demo                 # renders three sample alerts offline
-make test                 # 148 tests
+make test                 # the test suite
 ```
+
+The **Threshold Lab** tab is the fastest way to understand the scoring engine:
+drag a slider, watch the verdict change.
 
 ### Step 2 — point it at real endpoints
 
-Edit `.env`, set `RH_NODE_RPC_URL`, then:
+Edit `.env`, set `RH_NODE_RPC_URL`, then either open the **Koneksi & API Test**
+tab in the UI, or run the identical checks in a terminal:
 
 ```bash
-make probe TOKEN=0xYourTokenAddress
+make ui                                   # browser
+make probe TOKEN=0xYourTokenAddress       # terminal (same diagnostics module)
 ```
 
 This is the **most important step**. It reports which endpoints actually
@@ -722,7 +837,7 @@ score. The four things most likely to bite you:
 ## Tests
 
 ```bash
-make test    # 148 tests
+make test    # 185 tests
 ```
 
 | File | Covers |
@@ -733,6 +848,8 @@ make test    # 148 tests
 | `test_order_safety.py` | Exposure caps; post-only pricing below the bid; crossed/wide books refused; lot rounding never rounds up; liquidity-drop and slippage aborts |
 | `test_paper_execution.py` | Exposure accumulation against a real DB; paper and live budgets isolated; paper enforces the same safety checks |
 | `test_metrics_and_reconcile.py` | HHI catches dispersed whales; median resists a manipulated source; liquidity reconciliation is pessimistic |
+| `test_diagnostics.py` | Checks never raise; unreachable hosts report FAIL with a fix; skips explain their consequence; diagnostics don't retry |
+| `test_ui.py` | Threshold lab agrees with the engine; every red flag rejects; overrides don't leak into global settings; the UI cannot place an order |
 
 ---
 

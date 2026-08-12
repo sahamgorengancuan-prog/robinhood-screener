@@ -63,10 +63,29 @@ backlog, with the reasoning for the order.
 | 3.4 | Pure order-safety checks | ✅ `execution/order_safety.py` |
 | 3.5 | Paper executor sharing the live code path | ✅ |
 | 3.6 | Live executor: 9 sequential guards, post-only only | ✅ |
-| 3.7 | 148 tests covering scoring, gates, decisions, order safety | ✅ |
+| 3.7 | 185 tests covering scoring, gates, decisions, order safety | ✅ |
 
 **Exit criteria:** 1 week of `PAPER` with `OKX_SIMULATED=true`, and every
 PAPER_BUY reviewed manually.
+
+---
+
+## Phase 3.5 — Operator surface ✅ built
+
+| Step | Deliverable | Status |
+|---|---|---|
+| 3.5.1 | Structured diagnostics: status, latency, observed API fields, remediation | ✅ `app/diagnostics.py` |
+| 3.5.2 | Gradio control panel, 6 tabs | ✅ `app/ui/gradio_app.py` |
+| 3.5.3 | Terminal probe sharing the same checks | ✅ `scripts/probe_endpoints.py` |
+| 3.5.4 | Threshold Lab — live gate/score recomputation from sliders | ✅ |
+| 3.5.5 | Read-only Token Inspector (no writes, no orders) | ✅ |
+
+The UI is deliberately incapable of placing an order or editing risk limits;
+both are asserted by tests. It binds to loopback and makes no outbound
+requests of its own.
+
+**Exit criteria:** the connection tab reports "Ready for PAPER" against your
+real endpoints.
 
 ---
 

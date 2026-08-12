@@ -1,9 +1,10 @@
-.PHONY: help install init probe run once demo test lint kill unkill clean
+.PHONY: help install init probe ui run once demo test lint kill unkill clean
 
 help:
 	@echo "install  - install dependencies"
 	@echo "init     - create .env from template and build the database"
-	@echo "probe    - check every API endpoint and report what actually works"
+	@echo "ui       - start the Gradio control panel (http://127.0.0.1:7860)  <-- start here"
+	@echo "probe    - same connection tests, in the terminal"
 	@echo "once     - run a single screening cycle and print the result"
 	@echo "run      - start the API + scheduler (http://localhost:8000)"
 	@echo "demo     - render sample alerts offline (no network, no keys)"
@@ -18,6 +19,9 @@ init:
 	@test -f .env || (cp .env.example .env && echo "created .env — edit it before running")
 	@mkdir -p data
 	python scripts/init_db.py
+
+ui:
+	python scripts/run_ui.py
 
 probe:
 	python scripts/probe_endpoints.py $(TOKEN)

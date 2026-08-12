@@ -48,6 +48,12 @@ curl -X POST localhost:8000/kill-switch/engage \
 - [ ] The API binds to `127.0.0.1`, or sits behind a reverse proxy with auth
 - [ ] Port 8000 is **not** open to the internet — there is no authentication on
       these endpoints
+- [ ] The Gradio UI (port 7860) is **also** unauthenticated and can engage or
+      release the kill switch. Leave `GRADIO_HOST=127.0.0.1`, or put an
+      authenticating proxy in front of it. Never pass `GRADIO_SHARE=true` — that
+      publishes a world-reachable tunnel to your control panel
+- [ ] Credentials typed into the UI's override panel are session-only; confirm
+      they were never written to `.env` by accident (`git diff .env` shows nothing)
 - [ ] TLS if it is reachable off-host
 - [ ] Webhook / Telegram URLs are treated as secrets (alerts disclose your
       strategy and positions)

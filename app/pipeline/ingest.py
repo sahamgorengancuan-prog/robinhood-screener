@@ -471,6 +471,41 @@ async def process_token(svc: Services, ref: TokenRef, c: Settings) -> dict[str, 
         }
 
 
+async def dry_run_token(svc: Services, ref: TokenRef, c: Settings):
+    """Evaluate one token and return the result **without writing anything**.
+
+    Used by the UI's inspector so an operator can examine a contract without
+    adding it to the tracked set or creating snapshot rows. Same code path as
+    `process_token` up to the decision; only the persistence and execution
+    steps are omitted.
+    """
+    with session_scope() as session:
+        existing = session.execute(
+            select(Token).where(Token.chain == ref.chain, Token.address == ref.address)
+        ).scalar_one_or_none()
+        history = load_history(session, existing.id) if existing else {}
+        prior_evals = recent_evaluations(session, existing.id) if existing else []
+
+    bundle = await collect(svc, ref, history)
+    snap = normalize(bundle, c)
+    gates = evaluate_gates(snap, c)
+    score = score_snapshot(snap, c)
+
+    killed, kill_reason = killswitch.is_killed()
+    safe, safe_reason = killswitch.safe_mode_status()
+
+    ctx = DecisionContext(
+        recent_scores=[e.score_total for e in prior_evals[:5]] + [score.total],
+        consecutive_passes=count_consecutive_passes(prior_evals) + 1,
+        kill_switch=killed,
+        safe_mode=safe,
+        safe_mode_reason=safe_reason or kill_reason,
+        run_mode=c.run_mode,
+        okx_available=snap.okx_available,
+    )
+    return snap, decide(snap, gates, score, ctx, c)
+
+
 # ===========================================================================
 # Cycle
 # ===========================================================================

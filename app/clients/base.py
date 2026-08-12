@@ -163,7 +163,8 @@ class BaseHTTPClient:
                 log.warning("%s %s %s failed (%s), retry %d in %.2fs", self.name, method, path, e, attempt + 1, delay)
                 await asyncio.sleep(delay)
 
-        raise ClientError(f"{self.name} {method} {path} failed after retries: {last_err}")
+        attempts = "no retry" if self.max_retries == 0 else f"{self.max_retries} retries"
+        raise ClientError(f"{self.name} {method} {path} failed ({attempts}): {last_err}")
 
 
 def pick(payload: Any, *candidates: str, default: Any = None) -> Any:
