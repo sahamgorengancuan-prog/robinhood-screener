@@ -1,32 +1,36 @@
 # Windows Runbook
 
-Everything here is double-click. No terminal required, no `make`, no manual
-`pip`.
+**One file. Double-click `START.bat`.** Everything else happens in the browser.
+
+Verified on **Python 3.14.7** (the recommended version) and 3.11.
 
 ---
 
-## The files you actually use
+## What START.bat does
 
-| Double-click | What it does |
-|---|---|
-| **`setup.bat`** | Run once. Creates `.venv`, installs everything, writes `.env`, builds the database, runs the tests. |
-| **`run_pipeline.bat`** | **The one-click.** Tests the APIs, runs one full screening cycle, prints the results. |
-| **`start_ui.bat`** | Opens the control panel in your browser (`http://127.0.0.1:7860`). |
-| **`test_connection.bat`** | Connection/API test only. Run after editing `.env`. |
-| **`run_api.bat`** | Leave-it-running mode: screens every 5 minutes and alerts. |
-| **`EMERGENCY_STOP.bat`** | **Stops all order execution instantly.** Needs no Python. |
-| **`resume_trading.bat`** | Clears the emergency stop (asks you to type `RESUME`). |
-| **`run_tests.bat`** | Runs the test suite. |
+```
+[1/4] find Python, create a private virtual environment   (first run only)
+[2/4] install dependencies                                 (first run only)
+[3/4] create .env with safe defaults if missing
+[4/4] open the control panel at http://127.0.0.1:7860
+```
 
-`_env.bat` is shared plumbing — don't run it directly.
+After that you never touch a terminal. Setup, connection tests, running the
+pipeline, tuning thresholds, and the kill switch are all in the panel.
+
+Keep the console window open — closing it stops the panel.
+
+There is exactly one other `.bat`: **`EMERGENCY_STOP.bat`**, kept separate on
+purpose because it must work when Python itself is broken. See below.
 
 ---
 
-## First run, start to finish
+## First run
 
 ### 1. Install Python
 
-Get Python 3.11+ from [python.org](https://www.python.org/downloads/).
+Get **Python 3.14** from [python.org](https://www.python.org/downloads/).
+
 **Tick "Add python.exe to PATH"** in the installer. That checkbox is the single
 most common cause of "nothing happens when I double-click".
 
@@ -36,98 +40,84 @@ most common cause of "nothing happens when I double-click".
 
 - **OneDrive / Google Drive folders** — file locking breaks virtualenv creation
 - paths with accented or non-Latin characters
-- very deep paths (Windows still has path-length limits)
+- very deep paths
 
-### 3. `setup.bat`
+### 3. Double-click `START.bat`
 
-Takes a few minutes on first run (it downloads a few hundred MB). It finishes by
-running the test suite — if those fail, stop and find out why before going
-further, because the tests are what enforce the risk gates.
+First run downloads a few hundred MB and takes several minutes. Later runs skip
+straight to opening the browser.
 
-### 4. Edit `.env`
+### 4. Work through the panel, left to right
 
-Right-click → *Open with* → Notepad. The only value you need to start is:
+| Tab | What you do there |
+|---|---|
+| **🚀 Setup** | Paste your RPC URL, click **Deteksi** for the chain ID, click **Simpan**. Optionally add OKX keys. Everything is written to `.env`. |
+| **🩺 Koneksi & API Test** | Click **Test Semua Koneksi**. Until this is green, treat every number as unreliable. It tells you exactly what to fix. |
+| **📊 Screener** | **Jalankan 1 siklus** for a single pass, or **Mulai otomatis** to keep screening every few minutes. |
+| **🔬 Token Inspector** | Paste a contract to evaluate it read-only, with the full gate breakdown. |
+| **🎛️ Threshold Lab** | Drag sliders, watch the verdict change instantly. Use it to calibrate before saving thresholds. |
+| **🛡️ Risiko & Order** | Kill switch, live exposure counters, order ledger. |
+| **⚙️ Konfigurasi** | Effective settings, secrets redacted. |
 
-```
-RH_NODE_RPC_URL=https://your-rpc-endpoint
-```
-
-Leave `RH_CHAIN_ID` blank — the connection test reads it from the node and tells
-you what to put there.
-
-Leave `RUN_MODE=ALERT_ONLY`. Nothing can be traded in that mode.
-
-### 5. `test_connection.bat`
-
-Until this reports green, treat every number the screener prints as unreliable.
-It tells you exactly what to fix for each failure.
-
-### 6. `run_pipeline.bat`
-
-The one-click. Five steps, all visible in the window:
-
-```
-[1/5] Checking configuration
-[2/5] Preparing database
-[3/5] Testing connections and APIs
-[4/5] Running one screening cycle
-[5/5] Results
-```
-
-Useful arguments — drag the `.bat` into a `cmd` window, or make a shortcut and
-append them to the Target field:
-
-```bat
-run_pipeline.bat --token 0xYourContract   ..screen a specific contract
-run_pipeline.bat --skip-checks            ..skip the API tests (faster)
-run_pipeline.bat --ui                     ..open the panel when it finishes
-```
-
-### 7. `start_ui.bat`
-
-The control panel. Six tabs: connection tests, screener results, token
-inspector, threshold lab, risk/kill switch, configuration.
+Only the RPC URL is genuinely required. Everything else degrades safely: an
+unreachable source makes its metrics *unavailable*, which routes tokens to
+WATCH — never to a buy.
 
 ---
 
 ## Emergency stop
 
-**`EMERGENCY_STOP.bat` — double-click it.**
+**Double-click `EMERGENCY_STOP.bat`.** Make a desktop shortcut now, before you
+need it.
 
-Make a desktop shortcut now, before you need it. It writes a `KILL_SWITCH`
-sentinel file and deliberately uses **no Python, no virtualenv and no running
-service**, so it works when everything else is broken — which is exactly when
-you'll reach for it.
+It writes a `KILL_SWITCH` sentinel file and uses **no Python, no virtualenv and
+no running service**, so it works when everything else is broken — which is
+exactly when you'll reach for it. That is why it is the one thing not folded
+into the panel.
 
-Screening and alerting continue. Only order execution stops. A running service
-notices on its next check; no restart needed.
+Screening and alerting continue; only order execution stops. A running panel
+picks it up on its next check, no restart needed.
 
-To resume: `resume_trading.bat`, which makes you type `RESUME`.
-
-Note there are **three independent kill-switch triggers** — the sentinel file,
-`KILL_SWITCH=true` in `.env`, and the control panel's button. Clearing one does
-not clear the others. The panel's "Risiko & Order" tab shows the live state.
+To resume: delete the `KILL_SWITCH` file, or use the panel's **Risiko & Order**
+tab. Note there are **three independent triggers** — the sentinel file,
+`KILL_SWITCH=true` in `.env`, and the panel's button. Clearing one does not
+clear the others; the panel shows the live state.
 
 ---
 
 ## Windows-specific behaviour
 
-**Console output.** The launchers switch the code page to UTF-8. Emoji status
-icons are used in Windows Terminal and VS Code; plain `cmd.exe` gets ASCII
-markers (`[+] [!] [x] [-]`) instead, because the classic console renders emoji
-as boxes even at code page 65001. Force either mode with `SCREENER_UNICODE=1` or
-`SCREENER_ASCII=1`.
+**Console output.** `START.bat` switches the code page to UTF-8. Status icons
+use emoji in Windows Terminal and VS Code, and ASCII markers (`[+] [!] [x] [-]`)
+in plain `cmd.exe`, because the classic console renders emoji as boxes even at
+code page 65001. Force either with `SCREENER_UNICODE=1` or `SCREENER_ASCII=1`.
 
-**Line endings.** The `.bat` files are stored with CRLF and pinned that way in
-`.gitattributes`. `cmd.exe` can mis-parse `goto` labels in LF-only batch files,
-so don't let an editor "helpfully" convert them.
+**Line endings.** The `.bat` files are CRLF and pinned that way in
+`.gitattributes`; `cmd.exe` mis-parses `goto` labels in LF-only batch files.
+Don't let an editor convert them.
 
-**Antivirus.** Some scanners flag new `.venv` directories or block `pip`. If
-`setup.bat` fails at the install step, that's the first thing to check.
+**Antivirus.** Some scanners block new `.venv` directories or `pip`. If the
+install step fails, check that first.
 
-**Closing a window stops the service.** `run_api.bat` and `start_ui.bat` run in
-the foreground. Closing the window ends them. Use `EMERGENCY_STOP.bat` to stop
-*trading* without stopping the *service*.
+**The panel is unauthenticated.** It binds to `127.0.0.1` and can engage or
+release the kill switch. Never set `GRADIO_SHARE=true` — that publishes a
+world-reachable tunnel to your control panel.
+
+---
+
+## Headless / scheduled runs
+
+The panel is the normal path, but a scriptable runner remains for Task
+Scheduler:
+
+```bat
+.venv\Scripts\python.exe scripts\one_click.py
+.venv\Scripts\python.exe scripts\one_click.py --token 0xYourContract
+.venv\Scripts\python.exe scripts\one_click.py --skip-checks
+```
+
+It refuses to run unattended when `RUN_MODE=LIVE` and `OKX_SIMULATED=false`,
+demanding a typed `LIVE` confirmation.
 
 ---
 
@@ -135,13 +125,14 @@ the foreground. Closing the window ends them. Use `EMERGENCY_STOP.bat` to stop
 
 | Symptom | Cause and fix |
 |---|---|
-| Window flashes and closes | Every launcher ends in `pause`, so this means the `.bat` itself failed to start — usually LF line endings after an editor rewrote it. Re-clone. |
-| "Python was not found" | Python isn't on PATH. Reinstall with the PATH checkbox ticked. |
+| Window flashes and closes | `START.bat` ends in `pause`, so this means the file itself failed to start — usually LF line endings after an editor rewrote it. Re-clone. |
+| "Python was not found" | Not on PATH. Reinstall with the PATH checkbox ticked. |
 | "Could not create the virtual environment" | Folder is in OneDrive, or antivirus blocked it. Move to `C:\screener`. |
-| Dependency install fails | Corporate proxy or no internet. Run `.venv\Scripts\python.exe -m pip install -r requirements.txt` by hand to see the real error. |
-| ".env could not be read" | The message names the offending setting. Fix it, or delete `.env` and re-run to regenerate safe defaults. |
-| Everything says SKIP / FAIL | `RH_NODE_RPC_URL` isn't set. Tokens will sit in WATCH — that's the safe degradation, not a crash. |
-| Panel stuck on "Loading…" | A browser extension blocking local scripts, or a stale tab. Hard-refresh with Ctrl+F5. |
+| Dependency install fails | Proxy or no internet. Run `.venv\Scripts\python.exe -m pip install -r requirements.txt` by hand to see the real error. |
+| Panel opens but says .env could not be read | Delete `.env` and restart — it regenerates with safe defaults. Your previous file is kept as `.env.bak`. |
+| Everything SKIP / FAIL in the connection tab | RPC URL not set. Tokens will sit in WATCH — the safe degradation, not a crash. |
+| Panel stuck on "Loading…" | Hard-refresh with Ctrl+F5. |
+| Browser didn't open | Paste `http://127.0.0.1:7860` in manually. |
 
 ---
 
@@ -149,10 +140,10 @@ the foreground. Closing the window ends them. Use `EMERGENCY_STOP.bat` to stop
 
 Work through [`SECURITY_CHECKLIST.md`](SECURITY_CHECKLIST.md) first.
 
-`run_pipeline.bat` will refuse to run unattended when `RUN_MODE=LIVE` and
-`OKX_SIMULATED=false` — it demands you type `LIVE` into the console. That guard
-exists because a double-clicked icon must never be one click away from spending
-real money.
+The Setup tab *can* switch to LIVE with real keys — that is the cost of
+one-click convenience — and it warns you in the loudest terms it can when you
+do. After that, the kill switch and the exposure caps are the only things
+between the bot and your balance.
 
 There is **no sell logic in this system**. It can enter a position and cannot
 exit one. Exits are manual. Do not leave it running unattended with money you

@@ -16,23 +16,38 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 BATS = sorted(ROOT.glob("*.bat"))
 
-LAUNCHERS = [
-    "run_pipeline.bat",     # the one-click entry point
-    "start_ui.bat",
-    "setup.bat",
-    "run_api.bat",
-    "test_connection.bat",
-    "run_tests.bat",
-    "EMERGENCY_STOP.bat",
-    "resume_trading.bat",
-    "_env.bat",
-]
+# Exactly two launchers, on purpose:
+#   START.bat          does everything, and hands off to the browser
+#   EMERGENCY_STOP.bat must work when Python itself is broken
+LAUNCHERS = ["START.bat", "EMERGENCY_STOP.bat"]
 
 
 # ------------------------------------------------------------------ presence
 def test_every_launcher_exists():
     missing = [n for n in LAUNCHERS if not (ROOT / n).exists()]
     assert missing == [], f"missing launchers: {missing}"
+
+
+def test_there_is_only_one_entry_point():
+    """The operator surface is START.bat plus the emergency stop, nothing else."""
+    found = sorted(p.name for p in BATS)
+    assert found == sorted(LAUNCHERS), (
+        f"unexpected .bat files: {set(found) - set(LAUNCHERS)}. "
+        "Everything else belongs in the control panel."
+    )
+
+
+def test_start_bat_launches_the_ui():
+    text = (ROOT / "START.bat").read_text()
+    assert "app.ui.gradio_app" in text
+    assert "GRADIO_INBROWSER" in text, "a double-click should land the user on the page"
+
+
+def test_start_bat_is_self_contained():
+    """No helper .bat to call — it bootstraps the venv itself."""
+    code = " ".join(line for _, line in _code_lines(ROOT / "START.bat"))
+    assert "_env.bat" not in code
+    assert "venv" in code and "requirements.txt" in code
 
 
 # ------------------------------------------------------------ line endings
@@ -91,12 +106,12 @@ def test_goto_targets_exist(bat: Path):
             assert target in labels, f"{bat.name}: goto :{target} has no matching label"
 
 
-def test_env_bat_does_not_setlocal():
-    """_env.bat must export PYTHON into the caller's environment."""
-    assert "setlocal" not in (ROOT / "_env.bat").read_text().lower()
+def test_no_setlocal_hides_the_python_path():
+    for bat in BATS:
+        assert "setlocal" not in bat.read_text().lower(), bat.name
 
 
-@pytest.mark.parametrize("bat", [p for p in BATS if p.name != "_env.bat"], ids=lambda p: p.name)
+@pytest.mark.parametrize("bat", BATS, ids=lambda p: p.name)
 def test_launchers_pause_so_the_window_stays_open(bat: Path):
     """A double-clicked window that closes instantly hides every error."""
     assert "pause" in bat.read_text().lower(), f"{bat.name} never pauses"
@@ -215,10 +230,9 @@ def test_one_click_script_exists_and_is_importable():
     spec.loader.exec_module(importlib.util.module_from_spec(spec))  # must not run main()
 
 
-def test_run_pipeline_bat_invokes_the_one_click_script():
-    text = (ROOT / "run_pipeline.bat").read_text()
-    assert "one_click.py" in text
-    assert "%*" in text, "arguments must be forwarded (--token, --ui, --skip-checks)"
+def test_one_click_script_still_available_for_headless_runs():
+    """The UI is the normal path, but a scriptable runner must remain."""
+    assert (ROOT / "scripts" / "one_click.py").exists()
 
 
 def test_emergency_stop_needs_no_python():

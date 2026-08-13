@@ -1,22 +1,30 @@
-"""Gradio control panel.
+"""Gradio control panel — the single operator surface.
 
-Six tabs, ordered the way you actually use them:
+`START.bat` launches only this. Everything an operator needs happens here:
 
-  1. Koneksi & API Test  — prove every source works before trusting a number
-  2. Screener            — ranked results, run a cycle
-  3. Token Inspector     — evaluate one contract, read-only, nothing persisted
-  4. Threshold Lab       — move a slider, watch the decision change instantly
-  5. Risiko & Order      — kill switch, exposure, order ledger
-  6. Konfigurasi         — effective settings, secrets redacted
+  0. Setup              — configure the whole system, written to `.env`
+  1. Koneksi & API Test — prove every source works before trusting a number
+  2. Screener           — run one cycle, or start the continuous loop
+  3. Token Inspector    — evaluate one contract, read-only, nothing persisted
+  4. Threshold Lab      — move a slider, watch the decision change instantly
+  5. Risiko & Order     — kill switch, exposure, order ledger
+  6. Konfigurasi        — effective settings, secrets redacted
 
-Two deliberate omissions, both safety-driven:
+What the UI can and cannot do
+-----------------------------
+It **can** write `.env` (that is what makes one-click setup possible) and it can
+start and stop the screening loop. Writes preserve the file's comments and keep
+a `.env.bak`, and a blank secret field never erases a stored one.
 
-  * **There is no "place order" control.** Orders may only ever originate from a
-    decision that passed the gates. The UI can stop trading; it cannot start a
-    trade.
-  * **Credentials typed here are never written to disk.** They live in the
-    browser session and are used to build a temporary client for testing. Saving
-    them is a deliberate act you perform in `.env`, not a side effect of a form.
+It **cannot** place an order. There is no order-submitting control anywhere in
+this module, and a test asserts it never calls the execution functions. Orders
+may only ever originate from a decision that passed the risk gates. The panel
+can *stop* trading; it cannot *start* a trade.
+
+Switching RUN_MODE to LIVE with real (non-simulated) keys is possible here, and
+the save handler says so in the loudest terms it can — but the kill switch and
+the exposure caps remain the only things standing between the bot and your
+balance. That is the trade the convenience buys.
 """
 
 from __future__ import annotations
@@ -25,11 +33,12 @@ import asyncio
 import datetime as dt
 import json
 import logging
+from pathlib import Path
 
 import gradio as gr
 from sqlalchemy import desc, func, select
 
-from app.config import Settings, get_settings
+from app.config import Settings, get_settings, reload_settings
 from app.db import init_db, session_scope
 from app.diagnostics import (
     FAIL,
@@ -49,6 +58,7 @@ from app.pipeline.risk import evaluate_gates
 from app.pipeline.scoring import score_snapshot
 from app.schemas import DecisionState, NormalizedSnapshot, Severity, TokenRef
 from app.services import build_services
+from app.ui import envfile, runtime
 from app.ui.theme import CSS, banner, metric_cards, score_bars, state_pill, theme
 from app.alerts.formatter import build_body
 
@@ -553,12 +563,202 @@ def load_config():
 
 
 # ===========================================================================
+# Tab 0 — Setup wizard
+# ===========================================================================
+ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
+
+SETUP_FIELDS = [
+    "RH_NODE_RPC_URL", "RH_CHAIN_ID", "RH_DATA_ENABLED", "RH_DATA_BASE_URL",
+    "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE", "OKX_PROJECT_ID",
+    "OKX_TRADE_API_KEY", "OKX_TRADE_API_SECRET", "OKX_TRADE_API_PASSPHRASE",
+    "OKX_SIMULATED", "RUN_MODE", "POSITION_USD", "MAX_EXPOSURE_DAILY_USD",
+    "ALERT_WEBHOOK_URL", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID",
+]
+
+
+# Fields backed by a Gradio component that rejects arbitrary strings. Feeding a
+# Dropdown an empty value raises "not in the list of choices" and leaves the
+# control blank, which then breaks the save. Every one of these needs a valid
+# fallback drawn from the live settings.
+CHOICE_FIELDS = {
+    "RH_DATA_ENABLED": ("false", "true"),
+    "OKX_SIMULATED": ("true", "false"),
+    "RUN_MODE": ("ALERT_ONLY", "PAPER", "LIVE"),
+}
+NUMBER_FIELDS = {"POSITION_USD", "MAX_EXPOSURE_DAILY_USD"}
+
+
+def _setting_default(key: str):
+    c = get_settings()
+    mapping = {
+        "RH_DATA_ENABLED": str(c.rh_data_enabled).lower(),
+        "OKX_SIMULATED": str(c.okx_simulated).lower(),
+        "RUN_MODE": c.run_mode,
+        "POSITION_USD": c.position_usd,
+        "MAX_EXPOSURE_DAILY_USD": c.max_exposure_daily_usd,
+        "RH_NODE_RPC_URL": c.rh_node_rpc_url,
+        "RH_CHAIN_ID": str(c.rh_chain_id) if c.rh_chain_id else "",
+        "RH_DATA_BASE_URL": c.rh_data_base_url,
+        "ALERT_WEBHOOK_URL": c.alert_webhook_url,
+    }
+    return mapping.get(key, "")
+
+
+def load_setup_values():
+    """Populate the form from .env, with secrets shown as a placeholder.
+
+    Falls back to the effective settings rather than an empty string, so the
+    controls always hold a value their component will accept.
+    """
+    current = envfile.read_env(ENV_PATH)
+    out = []
+    for key in SETUP_FIELDS:
+        val = current.get(key, "")
+
+        if key in envfile.SECRET_KEYS:
+            out.append("***tersimpan***" if val else "")
+            continue
+
+        if key in CHOICE_FIELDS:
+            choices = CHOICE_FIELDS[key]
+            if val not in choices:
+                fallback = _setting_default(key)
+                val = fallback if fallback in choices else choices[0]
+            out.append(val)
+            continue
+
+        if key in NUMBER_FIELDS:
+            try:
+                out.append(float(val) if val != "" else float(_setting_default(key)))
+            except (TypeError, ValueError):
+                out.append(float(_setting_default(key) or 0))
+            continue
+
+        out.append(val or str(_setting_default(key) or ""))
+    return out
+
+
+async def do_detect_chain_id(rpc_url: str):
+    """Read the chain ID from the node rather than making the user find it."""
+    rpc_url = (rpc_url or "").strip()
+    if not rpc_url:
+        return gr.update(), banner(WARN, "Isi RPC URL dulu.")
+    c = get_settings().model_copy(update={"rh_node_rpc_url": rpc_url})
+    svc = build_diagnostic_services(c)
+    try:
+        cid = await svc.node.chain_id()
+        blk = await svc.node.block_number()
+    except Exception as e:  # noqa: BLE001
+        return gr.update(), banner(FAIL, f"Tidak bisa membaca chain ID: {e}")
+    finally:
+        await svc.aclose()
+    if cid is None:
+        return gr.update(), banner(FAIL, "Node menjawab tapi tidak memberi chain ID.")
+    return str(cid), banner(
+        OK, f"Chain ID <b>{cid}</b> terdeteksi (block {blk:,}). Klik <b>Simpan</b> untuk menyimpannya."
+    )
+
+
+def do_save_setup(*values):
+    """Write the form to .env and hot-reload settings."""
+    form = dict(zip(SETUP_FIELDS, values))
+
+    # gr.Number hands back floats; "25.0" vs "25" would churn .env on every save.
+    for key in NUMBER_FIELDS:
+        val = form.get(key)
+        if isinstance(val, float) and val.is_integer():
+            form[key] = str(int(val))
+
+    requested_mode = (form.get("RUN_MODE") or "").strip().upper()
+    simulated = str(form.get("OKX_SIMULATED", "")).strip().lower()
+
+    current = envfile.read_env(ENV_PATH)
+    updates = envfile.merge_form(current, form)
+
+    if not updates:
+        return banner(WARN, "Tidak ada perubahan untuk disimpan."), gr.update()
+
+    try:
+        changed = envfile.write_env(ENV_PATH, updates)
+    except OSError as e:
+        return banner(FAIL, f"Gagal menulis .env: {e}"), gr.update()
+
+    reload_settings()
+    c = get_settings()
+
+    msg = f"Tersimpan ke <code>.env</code>: <b>{', '.join(changed)}</b>"
+    kind = OK
+    if requested_mode == "LIVE" and simulated in ("false", "0", "no"):
+        kind = WARN
+        msg += ("<br><b>Mode LIVE dengan uang sungguhan aktif.</b> Kill switch dan batas "
+                "exposure adalah satu-satunya yang membatasi kerugian. Periksa tab "
+                "Risiko &amp; Order sekarang.")
+    elif requested_mode == "LIVE":
+        msg += "<br>Mode LIVE pada OKX demo — tidak ada uang sungguhan."
+
+    return banner(kind, msg), load_config()
+
+
+def do_init_db():
+    try:
+        init_db()
+    except Exception as e:  # noqa: BLE001
+        return banner(FAIL, f"Gagal menyiapkan database: {e}")
+    c = get_settings()
+    return banner(OK, f"Database siap: <code>{c.database_url}</code>")
+
+
+def setup_status():
+    """A short, honest readiness summary for the top of the setup tab."""
+    c = get_settings()
+    items = []
+    items.append(("RPC node", "terisi" if c.rh_node_rpc_url else "KOSONG",
+                  "wajib untuk data on-chain"))
+    items.append(("Chain ID", str(c.rh_chain_id) if c.rh_chain_id else "belum diset",
+                  "dipakai OKX sebagai chainIndex"))
+    items.append(("OKX market", "terisi" if c.okx_api_key else "kosong", "harga & likuiditas"))
+    items.append(("OKX trading", "terisi" if c.okx_trade_api_key else "kosong",
+                  "hanya untuk PAPER/LIVE"))
+    items.append(("Mode", c.run_mode, "demo" if c.okx_simulated else "REAL MONEY"))
+    items.append(("Clip", f"${c.position_usd:,.0f}", f"harian ${c.max_exposure_daily_usd:,.0f}"))
+    return metric_cards([(a, b, d) for a, b, d in items])
+
+
+# ===========================================================================
+# Pipeline control
+# ===========================================================================
+def scheduler_status_html():
+    st = runtime.status()
+    if st["running"]:
+        started = st["started_at"].strftime("%H:%M:%S") if st["started_at"] else "?"
+        last = st["last_run"].strftime("%H:%M:%S") if st["last_run"] else "belum"
+        return banner(OK, f"<b>Screening otomatis BERJALAN</b> — mulai {started} · "
+                          f"siklus selesai: {st['runs']} · terakhir {last} · error {st['errors']}")
+    return banner(WARN, "Screening otomatis <b>berhenti</b>. Klik <b>Mulai otomatis</b> "
+                        "untuk menjalankannya terus-menerus.")
+
+
+async def do_start_scheduler(interval_min: float):
+    """Async on purpose: APScheduler's AsyncIOScheduler binds to the running
+    loop, and Gradio executes sync handlers in a worker thread where there
+    isn't one."""
+    ok, msg = runtime.start(int((interval_min or 5) * 60))
+    return scheduler_status_html(), banner(OK if ok else WARN, msg)
+
+
+async def do_stop_scheduler():
+    ok, msg = runtime.stop()
+    return scheduler_status_html(), banner(OK if ok else WARN, msg)
+
+
+# ===========================================================================
 # Blocks
 # ===========================================================================
 def build_ui() -> gr.Blocks:
     c = get_settings()
 
-    with gr.Blocks(title="Robinhood Chain Screener", theme=theme(), css=CSS) as demo:
+    # Gradio 6 moved theme/css from the Blocks constructor to launch().
+    with gr.Blocks(title="Robinhood Chain Screener") as demo:
         gr.Markdown(
             "# 🛡️ Robinhood Chain Token Screener\n"
             "Screener token early-stage dengan **risk gate keras**. Tugas utamanya adalah **menolak**. "
@@ -585,8 +785,97 @@ def build_ui() -> gr.Blocks:
 
         creds = [rpc_url, okx_key, okx_secret, okx_pass, okx_project, chain_id]
 
-        # ===================================================== TAB 1
+        # ===================================================== TAB 0
         with gr.Tabs():
+            with gr.Tab("🚀 Setup"):
+                gr.Markdown(
+                    "Isi di sini sekali, klik **Simpan**, dan seluruh sistem terkonfigurasi. "
+                    "Nilai ditulis ke file `.env` (komentar dan urutannya dipertahankan, "
+                    "dan salinan cadangan `.env.bak` dibuat). "
+                    "**Kolom rahasia yang dibiarkan kosong tidak akan menghapus nilai lama.**"
+                )
+                setup_cards = gr.HTML(setup_status())
+
+                with gr.Accordion("1. Robinhood Chain — wajib", open=True):
+                    gr.Markdown(
+                        "Satu-satunya yang benar-benar wajib. Tanpa ini, supply, flag kontrak, "
+                        "umur token, dan distribusi holder semuanya tidak tersedia — dan token "
+                        "yang tidak bisa diukur tidak bisa dibeli."
+                    )
+                    with gr.Row():
+                        f_rpc = gr.Textbox(label="RPC URL (JSON-RPC)", scale=4,
+                                           placeholder="https://...")
+                        f_chain = gr.Textbox(label="Chain ID", scale=1,
+                                             placeholder="kosongkan lalu deteksi")
+                        detect_btn = gr.Button("🔎 Deteksi", scale=1)
+                    with gr.Row():
+                        f_data_on = gr.Dropdown(["false", "true"], value="false", scale=1,
+                                                label="Data API aktif?")
+                        f_data_url = gr.Textbox(label="Data API base URL (opsional)", scale=3)
+                    gr.Markdown(
+                        "_Data API dimatikan secara default: kontrak respons-nya belum "
+                        "terverifikasi di repo ini. Aktifkan setelah Anda memeriksa nama field "
+                        "yang dikembalikan di tab Koneksi._"
+                    )
+
+                with gr.Accordion("2. OKX — data pasar (opsional)", open=False):
+                    gr.Markdown("Untuk harga, likuiditas, dan volume. Screening tetap jalan tanpa ini.")
+                    with gr.Row():
+                        f_okx_key = gr.Textbox(label="OKX_API_KEY", type="password")
+                        f_okx_sec = gr.Textbox(label="OKX_API_SECRET", type="password")
+                    with gr.Row():
+                        f_okx_pass = gr.Textbox(label="OKX_API_PASSPHRASE", type="password")
+                        f_okx_proj = gr.Textbox(label="OKX_PROJECT_ID", type="password")
+
+                with gr.Accordion("3. OKX — trading (hanya untuk PAPER/LIVE)", open=False):
+                    gr.Markdown(
+                        "**Pakai API key terpisah dari data pasar.** Beri izin *trade saja* — "
+                        "jangan pernah izin withdraw — dan kunci ke IP server Anda."
+                    )
+                    with gr.Row():
+                        f_tr_key = gr.Textbox(label="OKX_TRADE_API_KEY", type="password")
+                        f_tr_sec = gr.Textbox(label="OKX_TRADE_API_SECRET", type="password")
+                    with gr.Row():
+                        f_tr_pass = gr.Textbox(label="OKX_TRADE_API_PASSPHRASE", type="password")
+                        f_sim = gr.Dropdown(["true", "false"], value="true",
+                                            label="OKX_SIMULATED (demo trading)")
+
+                with gr.Accordion("4. Mode & ukuran posisi", open=True):
+                    with gr.Row():
+                        f_mode = gr.Dropdown(
+                            ["ALERT_ONLY", "PAPER", "LIVE"], value=c.run_mode, label="RUN_MODE",
+                            info="ALERT_ONLY = tidak ada order sama sekali. Mulai dari sini.",
+                        )
+                        f_pos = gr.Number(value=c.position_usd, label="POSITION_USD",
+                                          info="ukuran per order")
+                        f_daily = gr.Number(value=c.max_exposure_daily_usd,
+                                            label="MAX_EXPOSURE_DAILY_USD",
+                                            info="batas total per hari")
+                    gr.Markdown(
+                        "_Ambil batas risiko lainnya (likuiditas, holder, slippage, dst.) di tab "
+                        "**Threshold Lab** — geser slider, lihat efeknya, lalu salin ke `.env`._"
+                    )
+
+                with gr.Accordion("5. Notifikasi (opsional)", open=False):
+                    f_webhook = gr.Textbox(label="ALERT_WEBHOOK_URL")
+                    with gr.Row():
+                        f_tg_token = gr.Textbox(label="TELEGRAM_BOT_TOKEN", type="password")
+                        f_tg_chat = gr.Textbox(label="TELEGRAM_CHAT_ID", type="password")
+
+                with gr.Row():
+                    save_btn = gr.Button("💾 Simpan ke .env", variant="primary", scale=2)
+                    initdb_btn = gr.Button("🗄️ Siapkan database", scale=1)
+                    reload_setup_btn = gr.Button("↻ Muat ulang dari .env", scale=1)
+                setup_result = gr.HTML()
+
+                setup_inputs = [
+                    f_rpc, f_chain, f_data_on, f_data_url,
+                    f_okx_key, f_okx_sec, f_okx_pass, f_okx_proj,
+                    f_tr_key, f_tr_sec, f_tr_pass,
+                    f_sim, f_mode, f_pos, f_daily,
+                    f_webhook, f_tg_token, f_tg_chat,
+                ]
+
             with gr.Tab("🩺 Koneksi & API Test"):
                 gr.Markdown(
                     "Jalankan ini **sebelum** mempercayai angka apa pun. Selain status hidup/mati, "
@@ -630,8 +919,23 @@ def build_ui() -> gr.Blocks:
 
             # ===================================================== TAB 2
             with gr.Tab("📊 Screener"):
+                gr.Markdown("### Kontrol pipeline")
+                sched_banner = gr.HTML(scheduler_status_html())
                 with gr.Row():
-                    run_btn = gr.Button("▶️ Jalankan siklus screening", variant="primary", scale=2)
+                    run_btn = gr.Button("▶️ Jalankan 1 siklus sekarang", variant="primary", scale=2)
+                    sched_interval = gr.Number(value=c.ingest_interval_s / 60, precision=1,
+                                               label="Interval (menit)", scale=1)
+                    start_sched_btn = gr.Button("🔁 Mulai otomatis", scale=1)
+                    stop_sched_btn = gr.Button("⏹️ Hentikan", scale=1)
+                sched_msg = gr.HTML()
+                gr.Markdown(
+                    "_Mode otomatis menjalankan siklus terus-menerus di dalam jendela ini. "
+                    "Menutup jendela menghentikannya. Untuk menghentikan **trading** tanpa "
+                    "menghentikan screening, pakai kill switch di tab Risiko._"
+                )
+
+                gr.Markdown("### Hasil")
+                with gr.Row():
                     refresh_btn = gr.Button("🔄 Muat ulang tabel", scale=1)
                 with gr.Row():
                     state_filter = gr.Dropdown(
@@ -849,9 +1153,24 @@ def build_ui() -> gr.Blocks:
                     "jangan tinggalkan berjalan tanpa pengawasan dengan modal yang Anda sayangi."
                 )
 
+        # ---- setup tab wiring -------------------------------------------
+        detect_btn.click(do_detect_chain_id, [f_rpc], [f_chain, setup_result])
+        save_btn.click(do_save_setup, setup_inputs, [setup_result, cfg_json]) \
+                .then(setup_status, None, [setup_cards])
+        initdb_btn.click(do_init_db, None, [setup_result])
+        reload_setup_btn.click(load_setup_values, None, setup_inputs) \
+                        .then(setup_status, None, [setup_cards])
+
+        # ---- pipeline control wiring ------------------------------------
+        start_sched_btn.click(do_start_scheduler, [sched_interval], [sched_banner, sched_msg])
+        stop_sched_btn.click(do_stop_scheduler, None, [sched_banner, sched_msg])
+        run_btn.click(scheduler_status_html, None, [sched_banner])
+
         # initial load
         demo.load(risk_status, None, [risk_banner, risk_cards])
         demo.load(load_screener, [state_filter, min_score], [screener_table, screener_cards])
+        demo.load(load_setup_values, None, setup_inputs)
+        demo.load(setup_status, None, [setup_cards])
 
     return demo
 
@@ -878,8 +1197,14 @@ def main() -> None:
             "kill switch — put it behind a reverse proxy with auth, or bind to 127.0.0.1.", host
         )
 
+    # `show_api` was removed in Gradio 6; theme and css moved here.
     build_ui().queue().launch(
-        server_name=host, server_port=port, share=share, show_api=False, inbrowser=inbrowser
+        server_name=host,
+        server_port=port,
+        share=share,
+        inbrowser=inbrowser,
+        theme=theme(),
+        css=CSS,
     )
 
 

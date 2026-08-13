@@ -168,3 +168,71 @@ def test_state_pill_colors_each_state():
 
     for state in STATE_COLORS:
         assert STATE_COLORS[state] in state_pill(state)
+
+
+# ------------------------------------------------------- setup tab (Gradio 6)
+def test_setup_values_are_always_valid_dropdown_choices(tmp_path, monkeypatch):
+    """Feeding a Gradio Dropdown a value outside its choices raises at runtime
+    and leaves the control blank, which then breaks Save. Regression guard."""
+    import app.ui.gradio_app as ui
+
+    monkeypatch.setattr(ui, "ENV_PATH", tmp_path / "missing.env")  # no .env at all
+    values = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    for key, choices in ui.CHOICE_FIELDS.items():
+        assert values[key] in choices, f"{key}={values[key]!r} not in {choices}"
+
+
+def test_setup_numbers_are_numeric(tmp_path, monkeypatch):
+    import app.ui.gradio_app as ui
+
+    monkeypatch.setattr(ui, "ENV_PATH", tmp_path / "missing.env")
+    values = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    for key in ui.NUMBER_FIELDS:
+        assert isinstance(values[key], (int, float)), f"{key} is {type(values[key])}"
+
+
+def test_setup_never_echoes_a_stored_secret(tmp_path, monkeypatch):
+    import app.ui.gradio_app as ui
+
+    env = tmp_path / ".env"
+    env.write_text("OKX_API_SECRET=super-secret-value\n", encoding="utf-8")
+    monkeypatch.setattr(ui, "ENV_PATH", env)
+    values = ui.load_setup_values()
+    assert "super-secret-value" not in str(values)
+    assert "***tersimpan***" in values
+
+
+def test_setup_form_roundtrip_writes_env(tmp_path, monkeypatch):
+    """The whole point of the Setup tab: fill it in, save, and it persists."""
+    import app.ui.gradio_app as ui
+    from app.ui.envfile import read_env
+
+    env = tmp_path / ".env"
+    env.write_text("RUN_MODE=ALERT_ONLY\nPOSITION_USD=25\n", encoding="utf-8")
+    monkeypatch.setattr(ui, "ENV_PATH", env)
+
+    form = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    form["RH_NODE_RPC_URL"] = "https://rpc.test/v1"
+    form["POSITION_USD"] = 10.0
+
+    banner_html, _ = ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
+
+    saved = read_env(env)
+    assert saved["RH_NODE_RPC_URL"] == "https://rpc.test/v1"
+    assert saved["POSITION_USD"] == "10", "floats must be normalised, not written as 10.0"
+    assert "Tersimpan" in banner_html
+
+
+def test_saving_live_mode_with_real_money_warns_loudly(tmp_path, monkeypatch):
+    import app.ui.gradio_app as ui
+
+    env = tmp_path / ".env"
+    env.write_text("RUN_MODE=ALERT_ONLY\n", encoding="utf-8")
+    monkeypatch.setattr(ui, "ENV_PATH", env)
+
+    form = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    form["RUN_MODE"] = "LIVE"
+    form["OKX_SIMULATED"] = "false"
+    banner_html, _ = ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
+    assert "uang sungguhan" in banner_html.lower()
+    assert "banner-warn" in banner_html

@@ -13,7 +13,7 @@ Missing data is never treated as safe. A token that cannot be measured
 cannot be bought.
 ```
 
-**Status:** phases 0–3 built and tested (256 tests passing). Four metrics have
+**Status:** phases 0–3 built and tested (251 tests, green on Python 3.14.7 and 3.11). Four metrics have
 gates but no wired data source yet — they block live buying rather than being
 scored around. See [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §B.
 
@@ -21,16 +21,19 @@ scored around. See [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §B.
 
 ## Quick start (Windows)
 
-Double-click, in this order. No terminal needed.
+**Double-click `START.bat`. That is the whole thing.**
 
-| | |
-|---|---|
-| **`setup.bat`** | once — installs everything and runs the tests |
-| **`run_pipeline.bat`** | **the one-click**: test APIs -> screen once -> show results |
-| **`start_ui.bat`** | the control panel in your browser |
-| **`EMERGENCY_STOP.bat`** | stops all order execution instantly (make a desktop shortcut) |
+It creates a private Python environment, installs everything, and opens the
+control panel in your browser. Setup, connection tests, running the pipeline,
+tuning thresholds and the kill switch all live in the panel — there is no other
+file to run and no terminal to touch.
 
-Full walkthrough and troubleshooting: [`docs/WINDOWS.md`](docs/WINDOWS.md).
+Verified on **Python 3.14.7** and 3.11. Full walkthrough:
+[`docs/WINDOWS.md`](docs/WINDOWS.md).
+
+The one exception is **`EMERGENCY_STOP.bat`**, kept as a separate file on
+purpose: it halts execution using no Python and no virtualenv, so it still works
+when everything else is broken.
 
 <details>
 <summary>Linux / macOS</summary>
@@ -38,19 +41,18 @@ Full walkthrough and troubleshooting: [`docs/WINDOWS.md`](docs/WINDOWS.md).
 ```bash
 make install && make init
 make ui            # http://127.0.0.1:7860
-make once          # one screening cycle
+make once          # one screening cycle, headless
 ```
 </details>
 
-Defaults are safe: `RUN_MODE=ALERT_ONLY`, no keys, no orders possible. The
-control panel's first tab tests every API and tells you what to fix.
+Defaults are safe: `RUN_MODE=ALERT_ONLY`, no keys, no orders possible.
 
 ---
 
 ## Table of contents
 
 0. [Control panel (Gradio UI)](#0-control-panel-gradio-ui)
-0b. [Windows launchers](#0b-windows-launchers)
+0b. [Windows packaging](#0b-windows-packaging)
 1. [Design & trade-offs](#1-design--trade-offs)
 2. [Architecture](#2-architecture)
 3. [Database schema](#3-database-schema)
@@ -67,11 +69,19 @@ control panel's first tab tests every API and tells you what to fix.
 
 ## 0. Control panel (Gradio UI)
 
-```bash
-make ui                       # http://127.0.0.1:7860
-```
+The single operator surface. `START.bat` launches only this; on Linux/macOS,
+`make ui`. Seven tabs, ordered the way you actually use them.
 
-Six tabs, ordered the way you actually use them.
+### 🚀 Setup
+
+Paste your RPC URL, click **Deteksi** to read the chain ID off the node rather
+than hunting for it, click **Simpan**. Optionally add OKX keys, choose the run
+mode and position size. Everything is written to `.env`.
+
+The write is careful about the things that bite: it **preserves every comment**
+(those annotations are the documentation for each risk threshold), keeps a
+`.env.bak`, and **a blank secret field never erases a stored one** — otherwise
+re-saving after a page reload would silently wipe your API keys.
 
 ### 🩺 Koneksi & API Test
 
@@ -104,10 +114,9 @@ Also on this tab: a one-click **RPC ping**, and a **test alert** that pushes a
 real message through every configured sink so you find out the webhook is wrong
 now rather than during a live signal.
 
-Credentials can be typed into the collapsible override panel to test them
-**before** committing them to `.env`. They live in process memory only and are
-never written to disk — saving a secret should be a deliberate act, not a side
-effect of a form.
+Credentials can also be typed into the collapsible override panel at the top of
+the page to test them **without** saving. Those live in process memory only —
+useful for trying a key before committing it on the Setup tab.
 
 ### 🎛️ Threshold Lab
 
@@ -131,17 +140,27 @@ provenance panel showing which source produced each field and what was missing.
 
 ### 📊 Screener · 🛡️ Risiko & Order · ⚙️ Konfigurasi
 
-Ranked results with per-component score columns and state filters; a cycle
-trigger; the kill switch with live exposure counters and the order ledger; and
-the effective configuration with every secret redacted.
+The Screener tab runs **one cycle on demand** or starts the **continuous loop**
+in-process, with a live status line (cycles completed, last run, errors). Below
+that: ranked results with per-component score columns and state filters. Risiko
+& Order holds the kill switch, live exposure counters and the order ledger.
+Konfigurasi shows the effective settings with every secret redacted.
 
-### Two deliberate omissions
+### What the panel can and cannot do
 
-- **There is no "place order" button.** Orders may only originate from a
-  decision that passed the gates. The UI can *stop* trading; it cannot *start* a
-  trade. A test asserts the UI module never calls the execution functions.
-- **Configuration is read-only in the UI.** Risk limits are changed by editing
-  `.env` and restarting, so they cannot be loosened from a browser tab.
+It **can** write `.env` and start or stop the screening loop. That is what makes
+one-click setup possible, and it is the only place the browser changes
+behaviour.
+
+It **cannot place an order.** There is no order-submitting control anywhere in
+the module, and a test asserts it never calls the execution functions. Orders
+may only originate from a decision that passed the risk gates. The panel can
+*stop* trading; it cannot *start* a trade.
+
+Switching to LIVE with real keys **is** possible from the Setup tab — that is
+the cost of the convenience — and the save handler says so in the loudest terms
+it can. After that, the kill switch and the exposure caps are the only things
+between the bot and your balance.
 
 ### Security
 
@@ -156,29 +175,25 @@ If you don't want the UI at all, drop the single `gradio` line from
 
 ---
 
-## 0b. Windows launchers
+## 0b. Windows packaging
 
-The deployment target is Windows, so every operation has a double-clickable
-entry point and there is no `make` in the loop.
+The deployment target is Windows on Python 3.14, so there is exactly **one**
+entry point and no `make` in the loop.
 
 | File | Purpose |
 |---|---|
-| `setup.bat` | First-time install: venv, dependencies, `.env`, database, tests |
-| `run_pipeline.bat` | **One click** — checks APIs, runs one cycle, prints results |
-| `start_ui.bat` | Control panel, opens the browser for you |
-| `test_connection.bat` | Connection/API test only |
-| `run_api.bat` | Continuous mode (FastAPI + 5-minute scheduler) |
-| `EMERGENCY_STOP.bat` | Halts execution instantly — **no Python required** |
-| `resume_trading.bat` | Clears the stop, after you type `RESUME` |
-| `run_tests.bat` | Test suite |
+| `START.bat` | **Everything.** Bootstraps the venv, installs, creates `.env`, opens the panel. |
+| `EMERGENCY_STOP.bat` | Halts execution instantly — **no Python required**. |
 
-**The batch files are deliberately thin.** All real logic lives in
-`scripts/one_click.py`, which is tested; the `.bat` only finds Python, creates
-the venv, and calls it. Batch script is the one part of this project that cannot
-be executed on the machine it was written on, so there is as little of it as
-possible — and `tests/test_windows.py` asserts what can be checked statically:
-CRLF endings, no unescaped `&`, every `goto` target exists, every launcher
-`pause`s, and paths are anchored to `%~dp0`.
+Everything that used to be a separate `.bat` — setup, connection tests, running
+a cycle, the continuous scheduler — is now a control in the panel.
+
+`START.bat` is deliberately thin: find Python, make a venv, launch
+`app.ui.gradio_app`. Batch script is the one part of this project that cannot be
+executed on the machine it was written on, so there is as little of it as
+possible, and `tests/test_windows.py` asserts what can be checked statically —
+CRLF endings, no unescaped `&`, valid `goto` targets, a `pause` at the end,
+paths anchored to `%~dp0`, and that no stray `.bat` files reappear.
 
 Three Windows-specific behaviours worth knowing:
 
@@ -189,9 +204,8 @@ Three Windows-specific behaviours worth knowing:
   classic console renders emoji as boxes even at code page 65001.
 - **CRLF is mandatory** for `.bat` and pinned in `.gitattributes`; `cmd.exe`
   mis-parses `goto` labels in LF-only batch files.
-- **The one-click refuses to run unattended in real-money mode.** With
-  `RUN_MODE=LIVE` and `OKX_SIMULATED=false` it stops and demands you type
-  `LIVE`. A double-clicked icon must never be one click from spending money.
+- **Real-money mode still demands a typed confirmation** in the headless
+  runner, and the panel warns loudly when you save it.
 
 ---
 
@@ -366,7 +380,7 @@ robinhood-screener/
 │   ├── probe_endpoints.py      # same checks, in the terminal
 │   ├── run_once.py
 │   └── demo_alert.py           # offline sample alerts
-├── tests/                      # 256 tests
+├── tests/                      # 251 tests
 └── docs/
     ├── ENDPOINTS.md            # verified vs unverified matrix
     ├── ASSUMPTIONS.md          # what the system does NOT know
@@ -911,7 +925,7 @@ score. The four things most likely to bite you:
 ## Tests
 
 ```bash
-make test    # 256 tests
+make test    # 251 tests
 ```
 
 | File | Covers |

@@ -7,7 +7,7 @@ rem  no running service, so it works even when everything else is broken or the
 rem  API is wedged - which is exactly when you need it.
 rem
 rem  Screening and alerting keep running. Only execution stops.
-rem  Undo with resume_trading.bat
+rem  Undo from the control panel (START.bat -> Risiko ^& Order tab),
 rem ===========================================================================
 
 cd /d "%~dp0"
@@ -37,6 +37,7 @@ echo.
 echo   A running service picks this up on its next check; no restart needed.
 echo   Screening and alerts continue as normal.
 echo.
-echo   To resume trading later, run resume_trading.bat
+echo   To resume: open START.bat and use the Risiko ^& Order tab,
+echo   or simply delete the KILL_SWITCH file in this folder.
 echo.
 pause

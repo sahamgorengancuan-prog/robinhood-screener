@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""One-click pipeline runner — the target of `run_pipeline.bat`.
+"""Headless pipeline runner.
+
+`START.bat` opens the control panel and everything is done there; this script is
+the scriptable equivalent, for a scheduled task or a terminal.
 
 Does the whole job end to end, in the order an operator actually needs it:
 
@@ -177,7 +180,7 @@ def print_results(summary: dict) -> None:
     if not summary["tokens"]:
         say(f"\n  {status_icon('WARN')} No candidate tokens.")
         say(dim("      Enable the Data API for automatic discovery, or add a contract:"))
-        say(dim("      run_pipeline.bat --token 0xYourContract"))
+        say(dim("      python scripts/one_click.py --token 0xYourContract"))
         return
 
     say(f"\n  {summary['tokens']} token(s) in {summary['duration_s']:.1f}s")
@@ -244,8 +247,7 @@ def main() -> int:
     hr("DONE")
     say("  Alerts   : data\\alerts.log")
     say("  Database : " + c.database_url.replace("sqlite:///", ""))
-    say("  Panel    : start_ui.bat        (browse results, tune thresholds)")
-    say("  Service  : run_api.bat         (scheduler, runs continuously)")
+    say("  Panel    : START.bat           (setup, results, thresholds, kill switch)")
     if c.run_mode == "ALERT_ONLY":
         say(dim("\n  Mode is ALERT_ONLY: nothing was traded, and nothing could be."))
     say(bold(BAR) + "\n")

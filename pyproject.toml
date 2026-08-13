@@ -7,6 +7,7 @@ name = "robinhood-screener"
 version = "0.1.0"
 description = "Risk-gated early-stage token screener for Robinhood Chain with optional OKX execution"
 requires-python = ">=3.11"
+# Verified end-to-end on CPython 3.14.7 (the deployment target) and 3.11.
 
 [tool.setuptools.packages.find]
 include = ["app*"]

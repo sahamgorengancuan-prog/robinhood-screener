@@ -1,19 +1,24 @@
-# Core runtime — deliberately small. No paid providers, no heavy infra.
-fastapi==0.115.6
-uvicorn[standard]==0.34.0
-pydantic==2.10.4
-pydantic-settings==2.7.0
-SQLAlchemy==2.0.36
-httpx==0.28.1
-APScheduler==3.11.0
-python-dotenv==1.0.1
-Jinja2==3.1.5
+# Verified against Python 3.14.7. Lower bounds are the first releases that ship
+# cp314 wheels — older pins (the 2024-era ones this project started with) fail to
+# build or crash on import under 3.14.
+#
+# Upper bounds are pinned to the next major only where an API break is known:
+# Gradio 6 moved theme/css to launch() and removed show_api, so 7 is excluded
+# until checked.
 
-# Control panel UI. Heaviest dependency in the project — if you only need the
-# API + scheduler, this one line can be dropped and everything else still runs.
-gradio==5.9.1
+fastapi>=0.141.1,<1.0
+uvicorn[standard]>=0.52.2,<1.0
+pydantic>=2.13.4,<3.0
+pydantic-settings>=2.15.0,<3.0
+SQLAlchemy>=2.0.52,<2.1
+httpx>=0.28.1,<1.0
+APScheduler>=3.11.3,<4.0
+python-dotenv>=1.1.0,<2.0
+
+# Control panel. Heaviest dependency by far — if you only need the API and the
+# scheduler, this line can be removed and everything else still runs.
+gradio>=6.24.0,<7.0
 
 # Dev / test only
-pytest==8.3.4
-pytest-asyncio==0.25.0
-respx==0.22.0
+pytest>=9.1.1,<10.0
+pytest-asyncio>=1.0.0,<2.0
