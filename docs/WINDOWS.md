@@ -59,7 +59,8 @@ straight to opening the browser.
 | **🛡️ Risiko & Order** | Kill switch, live exposure counters, order ledger. |
 | **⚙️ Konfigurasi** | Effective settings, secrets redacted. |
 
-Only the RPC URL is genuinely required. Everything else degrades safely: an
+Only the RPC URL is genuinely required. For which keys to obtain and what
+each unlocks, see [`API_SETUP.md`](API_SETUP.md). Everything else degrades safely: an
 unreachable source makes its metrics *unavailable*, which routes tokens to
 WATCH — never to a buy.
 

@@ -29,7 +29,8 @@ tuning thresholds and the kill switch all live in the panel — there is no othe
 file to run and no terminal to touch.
 
 Verified on **Python 3.14.7** and 3.11. Full walkthrough:
-[`docs/WINDOWS.md`](docs/WINDOWS.md).
+[`docs/WINDOWS.md`](docs/WINDOWS.md). Which API keys you need and what each one
+unlocks: [`docs/API_SETUP.md`](docs/API_SETUP.md).
 
 The one exception is **`EMERGENCY_STOP.bat`**, kept as a separate file on
 purpose: it halts execution using no Python and no virtualenv, so it still works
