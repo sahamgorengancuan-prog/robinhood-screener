@@ -114,10 +114,25 @@ class NormalizedSnapshot(BaseModel):
         if field not in self.missing_fields:
             self.missing_fields.append(field)
 
-    def set_field(self, field: str, value: Any, source: str) -> None:
-        """Assign a value and record where it came from. No-op for None so a
-        later, poorer source cannot erase a good value."""
+    def set_field(self, field: str, value: Any, source: str, overwrite: bool = False) -> None:
+        """Assign a value and record where it came from.
+
+        Two rules, both load-bearing:
+
+        * **None is a no-op**, so a later, poorer source cannot erase a good
+          value.
+        * **First writer wins.** Precedence is call order: the normalizer applies
+          sources best-first, and a later source only fills what is still empty.
+          Without this, the last provider in the list would silently overwrite a
+          better one — and mixing, say, one provider's 24h volume with another's
+          1h window makes the spike and turnover gates compare unlike numbers.
+
+        Pass `overwrite=True` only when a source is genuinely authoritative for
+        that field regardless of order.
+        """
         if value is None:
+            return
+        if not overwrite and getattr(self, field, None) is not None:
             return
         setattr(self, field, value)
         self.sources[field] = source

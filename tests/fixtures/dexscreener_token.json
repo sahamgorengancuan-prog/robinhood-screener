@@ -1,0 +1,82 @@
+{
+  "schemaVersion": "1.0.0",
+  "pairs": [
+    {
+      "chainId": "base",
+      "dexId": "uniswap",
+      "url": "https://dexscreener.com/base/0xshallow",
+      "pairAddress": "0xshallowpool000000000000000000000000000001",
+      "baseToken": {
+        "address": "0xTOKEN0000000000000000000000000000000001",
+        "name": "Example Token",
+        "symbol": "EXMP"
+      },
+      "quoteToken": {
+        "address": "0x4200000000000000000000000000000000000006",
+        "name": "Wrapped Ether",
+        "symbol": "WETH"
+      },
+      "priceNative": "0.0000121",
+      "priceUsd": "0.04102",
+      "txns": {
+        "m5": {"buys": 1, "sells": 0},
+        "h1": {"buys": 12, "sells": 9},
+        "h6": {"buys": 60, "sells": 55},
+        "h24": {"buys": 210, "sells": 190}
+      },
+      "volume": {"h24": 120000.5, "h6": 40000.0, "h1": 5000.0, "m5": 300.0},
+      "priceChange": {"m5": 0.1, "h1": -0.4, "h6": 2.2, "h24": 3.8},
+      "liquidity": {"usd": 90000.25, "base": 2200000.0, "quote": 26.5},
+      "fdv": 4100000.0,
+      "marketCap": 3100000.0,
+      "pairCreatedAt": 1735689600000
+    },
+    {
+      "chainId": "base",
+      "dexId": "aerodrome",
+      "url": "https://dexscreener.com/base/0xdeep",
+      "pairAddress": "0xdeeppool00000000000000000000000000000002",
+      "baseToken": {
+        "address": "0xTOKEN0000000000000000000000000000000001",
+        "name": "Example Token",
+        "symbol": "EXMP"
+      },
+      "quoteToken": {
+        "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "name": "USD Coin",
+        "symbol": "USDC"
+      },
+      "priceNative": "0.04110",
+      "priceUsd": "0.04110",
+      "txns": {
+        "m5": {"buys": 4, "sells": 3},
+        "h1": {"buys": 48, "sells": 41},
+        "h6": {"buys": 260, "sells": 240},
+        "h24": {"buys": 1150, "sells": 1050}
+      },
+      "volume": {"h24": 2200000.0, "h6": 610000.0, "h1": 95000.0, "m5": 9000.0},
+      "priceChange": {"m5": 0.05, "h1": 0.8, "h6": 1.9, "h24": 4.0},
+      "liquidity": {"usd": 1500000.0, "base": 36000000.0, "quote": 1500000.0},
+      "fdv": 12000000.0,
+      "marketCap": 9000000.0,
+      "pairCreatedAt": 1735689600000
+    },
+    {
+      "chainId": "ethereum",
+      "dexId": "uniswap",
+      "url": "https://dexscreener.com/ethereum/0xother",
+      "pairAddress": "0xotherchain000000000000000000000000000003",
+      "baseToken": {
+        "address": "0xTOKEN0000000000000000000000000000000001",
+        "name": "Different Token Same Address",
+        "symbol": "EXMP"
+      },
+      "quoteToken": {"address": "0xc02a", "name": "Wrapped Ether", "symbol": "WETH"},
+      "priceUsd": "999.99",
+      "txns": {"h24": {"buys": 5, "sells": 5}},
+      "volume": {"h24": 100.0},
+      "liquidity": {"usd": 50000000.0},
+      "pairCreatedAt": 1700000000000
+    }
+  ]
+}

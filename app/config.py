@@ -53,6 +53,22 @@ class Settings(BaseSettings):
     rh_data_path_token_holders: str = "/tokens/{address}/holders"
     rh_data_path_token_transfers: str = "/tokens/{address}/transfers"
 
+    # ------------------------------------- free market data (no API key)
+    # DexScreener is the only free source here that reports buy vs sell counts,
+    # which is what unblocks buy_ratio_24h. GeckoTerminal is the independent
+    # second price source that makes gate_price_agreement satisfiable at all.
+    # Both need their own chain slug: the same chain has a different name in
+    # every provider's namespace, and a wrong slug prices a different asset.
+    dexscreener_enabled: bool = True
+    dexscreener_base_url: str = "https://api.dexscreener.com"
+    dexscreener_chain_slug: str = ""      # e.g. "ethereum", "base", "arbitrum"
+    dexscreener_timeout_s: float = 15.0
+
+    geckoterminal_enabled: bool = True
+    geckoterminal_base_url: str = "https://api.geckoterminal.com"
+    geckoterminal_network: str = ""       # e.g. "eth", "base", "arbitrum"
+    geckoterminal_timeout_s: float = 15.0
+
     # ------------------------------------------------- explorer (Blockscout)
     # Used only for source-verification status. Free, optional but recommended:
     # unverified contract => hard reject.

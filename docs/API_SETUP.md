@@ -17,11 +17,13 @@ Semua yang di Tier 1–3 **gratis**. Yang berbayar hanya Tier 4, dan itu opsiona
 | Tahap | Yang Anda punya | Yang bisa dilakukan sistem |
 |---|---|---|
 | **0** | tidak ada apa-apa | UI jalan, Threshold Lab jalan, semua token → WATCH |
-| **1** | RPC node + explorer | supply, flag kontrak, proxy, owner, umur token, verifikasi kontrak, holder (fallback) |
-| **2** | + OKX Web3 (market) | harga, likuiditas, volume 5m/1h/24h, tx count, market cap, holder count → **mayoritas gate hidup**, ALERT berguna |
-| **3** | + OKX Trading | spread, order book, saldo, penempatan order → **PAPER_BUY** |
-| **4** | + Data API | penemuan token otomatis, holder list terindeks → **pipeline penuh** |
-| **5** | + sumber harga ke-2 | cross-check harga → **LIVE_BUY jadi mungkin** |
+| **1** | RPC + **DexScreener + GeckoTerminal** + explorer | harga (2 sumber), likuiditas, volume 5m/1h/24h, **arus beli/jual**, tx count, holder, verifikasi kontrak, umur token → **semua gate hidup**, cross-check harga aktif |
+| **2** | + OKX Web3 | sumber harga ketiga, pembanding likuiditas |
+| **3** | + OKX Trading | spread, order book, saldo, order → **PAPER_BUY** |
+| **4** | + Data API | penemuan token otomatis → **pipeline penuh** |
+
+Tahap 1 sudah membuka **semua gate yang bisa dibuka oleh API**, dan **hanya RPC
+yang butuh pendaftaran**. DexScreener dan GeckoTerminal tanpa kunci sama sekali.
 
 Setiap sumber yang gagal membuat metriknya **UNAVAILABLE**, yang mengarahkan
 token ke WATCH — bukan crash, dan bukan pembelian. Itu jalur degradasi yang
@@ -29,12 +31,12 @@ disengaja.
 
 ---
 
-## 1. Tier 1 — wajib (gratis)
+## 1. Tier 1 — wajib, dan **dua di antaranya tanpa API key sama sekali**
 
 ### 1a. Robinhood Chain RPC node
 
-**Ini satu-satunya yang benar-benar wajib.** Tanpa ini tidak ada data on-chain
-sama sekali.
+**Satu-satunya yang butuh pendaftaran di tier ini.** Tanpa ini tidak ada data
+on-chain.
 
 **Dapatkan di:**
 
@@ -44,49 +46,97 @@ sama sekali.
 | QuickNode | mendukung jaringan Robinhood termasuk testnet |
 | RPC publik | jika tersedia; rawan rate limit |
 
-**Isi di:** tab **🚀 Setup** → *RPC URL (JSON-RPC)* → klik **Deteksi** untuk
-chain ID → **Simpan**.
-(atau `.env`: `RH_NODE_RPC_URL=`, `RH_CHAIN_ID=`)
+**Langkah:**
+1. Daftar → buat app → pilih jaringan Robinhood Chain → salin HTTPS URL
+2. Tab **🚀 Setup** → *RPC URL* → klik **Deteksi** (chain ID dibaca dari node)
+3. **Simpan**
 
-**Jangan tebak `RH_CHAIN_ID`.** Tombol Deteksi membacanya lewat `eth_chainId`.
-Nilai ini juga dipakai sebagai `chainIndex` OKX — salah isi berarti OKX mencari
-di chain yang salah.
-
-**Yang terbuka:**
-
-| Metrik | Gate |
-|---|---|
-| `total_supply`, `decimals`, `symbol` | `tokenomics` |
-| flag kontrak (mint/pause/blacklist/proxy/owner) | `contract_flags` (HARD) |
-| `token_age_hours` (dari deploy block) | `token_age` (HARD) |
-| rekonstruksi holder dari log `Transfer` | fallback distribusi holder |
-
-**Biaya:** gratis di tier awal. Panggilan termahal adalah `eth_getLogs`; dipakai
-hanya sebagai fallback dan dipotong per 2000 blok.
-
-### 1b. Blockscout explorer
-
-**Tidak perlu kunci. Sudah aktif secara default.**
-
-`EXPLORER_BASE_URL=https://robinhoodchain.blockscout.com`
-
-**Yang terbuka:**
-
-| Metrik | Gate |
-|---|---|
-| `contract_verified` | `contract_verified` — **kontrak tak terverifikasi = HARD REJECT** |
-| holder count + top holder | `holders_min`, `top1/top10_concentration` |
-
-Kalau explorer mati, verifikasi jadi `None` → memblokir LIVE_BUY tapi masih
-ALERT. Itu sebabnya ia tidak diperlakukan sebagai "aman".
+**Yang terbuka:** supply, flag kontrak (mint/pause/blacklist/proxy/owner), umur
+token dari deploy block, rekonstruksi holder dari log `Transfer`.
 
 ---
 
-## 2. Tier 2 — data pasar (gratis)
+### 1b. DexScreener — **tanpa API key, tanpa daftar** ⭐
+
+Ini sumber data pasar terpenting di proyek ini, dan **gratis total**.
+
+Ia satu-satunya sumber gratis yang melaporkan **jumlah transaksi beli vs jual** —
+metrik yang sebelumnya sama sekali tidak punya sumber dan membuat gate arus dana
+selalu mati.
+
+**Langkah:**
+1. Tidak ada pendaftaran. Tidak ada kunci.
+2. Cari tahu *chain slug* DexScreener untuk chain Anda: buka
+   `https://dexscreener.com`, klik chain-nya, lihat URL —
+   `dexscreener.com/base/0x...` berarti slug-nya `base`.
+3. Tab **🚀 Setup** → bagian *1b* → isi **DexScreener chain slug** → **Simpan**
+4. Tab **🩺 Koneksi** → isi alamat token → **Test Semua Koneksi**
+
+**Yang terbuka:**
+
+| Metrik | Gate |
+|---|---|
+| `buys_24h` / `sells_24h` → `buy_ratio_24h` | `buy_sell_balance` (HARD) |
+| `tx_count_24h` | `tx_count_min` (HARD) |
+| `volume_5m` / `volume_1h` / `volume_24h` | `volume_min`, `volume_organic`, `volume_spike` (HARD) |
+| `liquidity_usd` | `liquidity_min` (HARD), `slippage_max` |
+| `price_usd` | sumber harga #1 |
+| `price_change_24h_pct` | `not_extended` (anti-chase) |
+
+**Peringatan slug.** Slug kosong berarti klien menerima pool dari chain **mana
+pun**. Fixture uji di repo ini sengaja berisi pool `ethereum` dengan likuiditas
+50 juta dan harga $999 untuk alamat yang sama — kalau filter chain rusak,
+screener akan memberi harga token yang sama sekali berbeda. Ada test khusus
+untuk itu.
+
+Batas laju: ~300 request/menit. Cadence 5 menit tidak akan mendekatinya.
+
+---
+
+### 1c. GeckoTerminal — **tanpa API key, tanpa daftar** ⭐
+
+**Ini yang membuat LIVE_BUY mungkin sama sekali.**
+
+Rekonsiliasi harga butuh **dua** sumber independen untuk mengambil median dan
+mengukur divergensi. Dengan satu sumber, `gate_price_agreement` selalu
+mengembalikan LIVE_ONLY — jadi berapa pun skornya, LIVE_BUY tidak tercapai.
+
+**Langkah:**
+1. Tidak ada pendaftaran. Tidak ada kunci.
+2. Cari *network slug*: buka `https://api.geckoterminal.com/api/v2/networks`
+   di browser, cari chain Anda, salin `id`-nya. Contoh: `eth`, `base`,
+   `arbitrum`. (Perhatikan: slug ini **berbeda** dari slug DexScreener —
+   `eth` vs `ethereum`.)
+3. Tab **🚀 Setup** → *GeckoTerminal network slug* → **Simpan**
+
+**Yang terbuka:** harga kedua (→ gate agreement lolos), likuiditas pembanding
+(diambil **minimum**, jadi hanya bisa membuat sizing lebih konservatif),
+`total_supply`, market cap.
+
+Batas laju: ~30 panggilan/menit di tier gratis. Kalau kena 429, turunkan
+`MAX_TOKENS_PER_CYCLE`.
+
+---
+
+### 1d. Blockscout explorer — tanpa kunci, sudah aktif default
+
+`EXPLORER_BASE_URL=https://robinhoodchain.blockscout.com`
+
+**Yang terbuka:** `contract_verified` (**kontrak tak terverifikasi = HARD
+REJECT**), jumlah holder, daftar top holder.
+
+**Ini satu-satunya sumber jumlah holder.** DexScreener dan GeckoTerminal tidak
+melaporkannya.
+
+---
+
+## 2. Tier 2 — OKX Web3 (opsional, gratis)
 
 ### OKX Web3 / DEX Market API
 
-Ini yang membuka **paling banyak gate sekaligus**.
+**Sekarang opsional**, bukan wajib: DexScreener dan GeckoTerminal sudah menutupi
+harga, likuiditas, volume, dan arus transaksi. OKX Web3 berguna sebagai sumber
+harga **ketiga** dan pembanding likuiditas.
 
 **Dapatkan di:** OKX → Developer Portal (Web3) → buat project → buat API key.
 Anda akan mendapat **empat** nilai:
@@ -244,10 +294,12 @@ Anda beli untuk menyelesaikannya** — semuanya butuh pekerjaan kode di repo ini
 
 | Metrik | Kenapa tidak bisa dibeli | Yang dibutuhkan |
 |---|---|---|
-| `buy_ratio_24h` | perlu klasifikasi swap beli vs jual per transaksi | decode log swap DEX (router-aware) |
 | `sniper_wallet_pct` | perlu analisis pemegang di blok-blok awal | analisis N blok pertama setelah deploy |
 | `bundled_buy_pct` | perlu clustering dompet dalam satu blok | clustering same-block multi-wallet |
 | `days_to_major_unlock` | **jadwal vesting tidak ada on-chain** | tabel manual, diisi tangan — bukan ditebak |
+
+`buy_ratio_24h` **sudah tidak ada di daftar ini** — DexScreener menutupinya.
+Tiga yang tersisa tetap `LIVE_ONLY`.
 
 Semuanya bersifat `LIVE_ONLY`: token yang kehilangan metrik ini **bisa** mencapai
 ALERT dan PAPER_BUY, tapi **tidak akan pernah** LIVE_BUY. Itu perilaku yang
@@ -264,17 +316,20 @@ lengkapnya di [`ASSUMPTIONS.md`](ASSUMPTIONS.md) §B.
 
 ## 6. Urutan pengerjaan yang saya sarankan
 
-### Untuk ALERT_ONLY yang berguna (target realistis minggu pertama)
+### Untuk ALERT_ONLY yang berguna (bisa selesai hari ini)
 
 1. RPC node → tab Setup → **Deteksi** chain ID → Simpan
-2. Biarkan explorer aktif (default)
-3. OKX Web3 market key → Simpan
-4. **Test Semua Koneksi** sampai hijau; perbaiki field `UNPARSED` bila ada
-5. Tambah beberapa kontrak manual di tab Screener → **Jalankan 1 siklus**
-6. Baca setiap alert. Tanyakan: *apakah saya akan mengambil trade ini secara
+2. **DexScreener chain slug** → Simpan  *(tanpa kunci)*
+3. **GeckoTerminal network slug** → Simpan  *(tanpa kunci)*
+4. Biarkan explorer aktif (default)
+5. **Test Semua Koneksi** sampai hijau — perhatikan baris **Price cross-check**,
+   ia harus melaporkan **2 sumber independen**
+6. Tambah beberapa kontrak di tab Screener → **Jalankan 1 siklus**
+7. Baca setiap alert. Tanyakan: *apakah saya akan mengambil trade ini secara
    manual?* Kalau tidak, ketatkan threshold di **Threshold Lab**.
 
-**Biaya: $0.** Ini sudah screener yang berguna.
+**Biaya: $0, dan hanya satu pendaftaran (RPC).** Ini sudah screener yang
+berfungsi penuh.
 
 ### Untuk pipeline penuh + PAPER
 
@@ -306,6 +361,12 @@ Semua bisa diisi lewat tab **🚀 Setup**; ini rujukan kalau Anda mengedit file.
 RH_NODE_RPC_URL=            # dari Alchemy/QuickNode
 RH_CHAIN_ID=                # kosongkan, pakai tombol Deteksi
 EXPLORER_BASE_URL=https://robinhoodchain.blockscout.com
+
+# Tier 1 — TANPA API KEY, hanya slug chain
+DEXSCREENER_ENABLED=true
+DEXSCREENER_CHAIN_SLUG=     # dari URL dexscreener.com/<slug>/0x...
+GECKOTERMINAL_ENABLED=true
+GECKOTERMINAL_NETWORK=      # dari api.geckoterminal.com/api/v2/networks
 
 # Tier 2 — data pasar
 OKX_API_KEY=

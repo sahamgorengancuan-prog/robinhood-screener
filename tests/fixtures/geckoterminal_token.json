@@ -1,0 +1,20 @@
+{
+  "data": {
+    "id": "base_0xTOKEN0000000000000000000000000000000001",
+    "type": "token",
+    "attributes": {
+      "address": "0xTOKEN0000000000000000000000000000000001",
+      "name": "Example Token",
+      "symbol": "EXMP",
+      "decimals": 18,
+      "image_url": "https://example.invalid/token.png",
+      "coingecko_coin_id": null,
+      "total_supply": "120000000000000000000000000",
+      "price_usd": "0.041150",
+      "fdv_usd": "12045000.0",
+      "market_cap_usd": "9010000.0",
+      "total_reserve_in_usd": "1512340.75",
+      "volume_usd": {"h24": "2185000.0"}
+    }
+  }
+}

@@ -568,7 +568,9 @@ def load_config():
 ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 
 SETUP_FIELDS = [
-    "RH_NODE_RPC_URL", "RH_CHAIN_ID", "RH_DATA_ENABLED", "RH_DATA_BASE_URL",
+    "RH_NODE_RPC_URL", "RH_CHAIN_ID",
+    "DEXSCREENER_CHAIN_SLUG", "GECKOTERMINAL_NETWORK",
+    "RH_DATA_ENABLED", "RH_DATA_BASE_URL",
     "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE", "OKX_PROJECT_ID",
     "OKX_TRADE_API_KEY", "OKX_TRADE_API_SECRET", "OKX_TRADE_API_PASSPHRASE",
     "OKX_SIMULATED", "RUN_MODE", "POSITION_USD", "MAX_EXPOSURE_DAILY_USD",
@@ -599,6 +601,8 @@ def _setting_default(key: str):
         "RH_NODE_RPC_URL": c.rh_node_rpc_url,
         "RH_CHAIN_ID": str(c.rh_chain_id) if c.rh_chain_id else "",
         "RH_DATA_BASE_URL": c.rh_data_base_url,
+        "DEXSCREENER_CHAIN_SLUG": c.dexscreener_chain_slug,
+        "GECKOTERMINAL_NETWORK": c.geckoterminal_network,
         "ALERT_WEBHOOK_URL": c.alert_webhook_url,
     }
     return mapping.get(key, "")
@@ -716,7 +720,10 @@ def setup_status():
                   "wajib untuk data on-chain"))
     items.append(("Chain ID", str(c.rh_chain_id) if c.rh_chain_id else "belum diset",
                   "dipakai OKX sebagai chainIndex"))
-    items.append(("OKX market", "terisi" if c.okx_api_key else "kosong", "harga & likuiditas"))
+    n_price = sum([bool(c.dexscreener_chain_slug), bool(c.geckoterminal_network), bool(c.okx_api_key)])
+    items.append(("Sumber harga", str(n_price),
+                  "butuh >=2 untuk LIVE_BUY" if n_price < 2 else "cross-check aktif"))
+    items.append(("OKX market", "terisi" if c.okx_api_key else "kosong", "opsional"))
     items.append(("OKX trading", "terisi" if c.okx_trade_api_key else "kosong",
                   "hanya untuk PAPER/LIVE"))
     items.append(("Mode", c.run_mode, "demo" if c.okx_simulated else "REAL MONEY"))
@@ -818,6 +825,32 @@ def build_ui() -> gr.Blocks:
                         "yang dikembalikan di tab Koneksi._"
                     )
 
+                with gr.Accordion("1b. Data pasar gratis — TANPA API KEY", open=True):
+                    gr.Markdown(
+                        "**Tidak perlu daftar, tidak perlu kunci.** Dua sumber ini mengisi "
+                        "lubang terbesar di pipeline:\n\n"
+                        "- **DexScreener** — satu-satunya sumber gratis yang melaporkan "
+                        "**jumlah transaksi beli vs jual**, yang dibutuhkan `buy_ratio_24h`. "
+                        "Juga volume per window (5m/1h/24h), likuiditas, dan umur pool.\n"
+                        "- **GeckoTerminal** — **sumber harga kedua yang independen**. Tanpa "
+                        "dua sumber, rekonsiliasi harga tidak punya pembanding dan "
+                        "**LIVE_BUY tidak akan pernah tercapai** berapa pun skornya.\n\n"
+                        "Yang perlu diisi hanya *slug chain*. Tiap penyedia memakai nama "
+                        "berbeda untuk chain yang sama, dan slug yang salah memberi harga "
+                        "token lain."
+                    )
+                    with gr.Row():
+                        f_ds_slug = gr.Textbox(
+                            label="DexScreener chain slug",
+                            placeholder="mis. ethereum, base, arbitrum",
+                            info="kosong = terima pool dari chain mana pun (berisiko)",
+                        )
+                        f_gt_net = gr.Textbox(
+                            label="GeckoTerminal network slug",
+                            placeholder="mis. eth, base, arbitrum",
+                            info="kosong = GeckoTerminal mati, sumber harga tinggal satu",
+                        )
+
                 with gr.Accordion("2. OKX — data pasar (opsional)", open=False):
                     gr.Markdown("Untuk harga, likuiditas, dan volume. Screening tetap jalan tanpa ini.")
                     with gr.Row():
@@ -869,7 +902,7 @@ def build_ui() -> gr.Blocks:
                 setup_result = gr.HTML()
 
                 setup_inputs = [
-                    f_rpc, f_chain, f_data_on, f_data_url,
+                    f_rpc, f_chain, f_ds_slug, f_gt_net, f_data_on, f_data_url,
                     f_okx_key, f_okx_sec, f_okx_pass, f_okx_proj,
                     f_tr_key, f_tr_sec, f_tr_pass,
                     f_sim, f_mode, f_pos, f_daily,

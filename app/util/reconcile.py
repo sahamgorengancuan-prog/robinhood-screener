@@ -25,7 +25,10 @@ from __future__ import annotations
 
 from app.pipeline.metrics import median
 
-SOURCE_PRIORITY = ["chainlink", "okx_market", "dex_pool", "explorer"]
+# Most trusted first. An oracle aggregates many venues; OKX and GeckoTerminal
+# each aggregate many pools; a single DEX pool is the easiest thing on the list
+# to manipulate, so it ranks last among real sources.
+SOURCE_PRIORITY = ["chainlink", "okx_market", "geckoterminal", "dex_pool", "explorer"]
 
 
 def reconcile_prices(sources: dict[str, float]) -> dict[str, object]:

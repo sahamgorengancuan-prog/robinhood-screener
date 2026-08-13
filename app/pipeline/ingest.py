@@ -139,6 +139,38 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
             except ClientError:
                 b.okx_book = (None, None)
 
+    async def _dexscreener() -> None:
+        """Primary free market source. Fills the two holes nothing else covered:
+        buy/sell counts and per-window volume."""
+        if not svc.dexscreener.enabled:
+            return
+        try:
+            m = await svc.dexscreener.token_market(addr)
+        except ClientError as e:
+            log.info("dexscreener failed for %s: %s", addr, e)
+            return
+        if not m:
+            return
+        b.dexscreener = m
+        b.dex_pool_price = m.get("price_usd")
+        b.dex_pool_liquidity_usd = m.get("liquidity_usd")
+        b.buys_24h = m.get("buys_24h")
+        b.sells_24h = m.get("sells_24h")
+        if not ref.symbol and m.get("symbol"):
+            ref.symbol = m["symbol"]
+        if not ref.name and m.get("name"):
+            ref.name = m["name"]
+
+    async def _geckoterminal() -> None:
+        """Independent second price source — without it, price reconciliation
+        has nothing to cross-check and LIVE_BUY stays unreachable."""
+        if not svc.geckoterminal.enabled:
+            return
+        try:
+            b.geckoterminal = await svc.geckoterminal.token_market(addr)
+        except ClientError as e:
+            log.info("geckoterminal failed for %s: %s", addr, e)
+
     async def _onchain() -> None:
         if not svc.node.enabled:
             return
@@ -211,7 +243,8 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
                 b.holder_basis_is_partial = False
 
     await asyncio.gather(
-        _okx(), _okx_listing(), _onchain(), _verification(), _holders(), return_exceptions=True
+        _dexscreener(), _geckoterminal(), _okx(), _okx_listing(),
+        _onchain(), _verification(), _holders(), return_exceptions=True
     )
 
     # Oracle sanity check on the quote asset, when configured.

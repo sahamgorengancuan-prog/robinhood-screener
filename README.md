@@ -13,7 +13,7 @@ Missing data is never treated as safe. A token that cannot be measured
 cannot be bought.
 ```
 
-**Status:** phases 0–3 built and tested (251 tests, green on Python 3.14.7 and 3.11). Four metrics have
+**Status:** phases 0–3 built and tested (300 tests, green on Python 3.14.7 and 3.11). Three metrics have
 gates but no wired data source yet — they block live buying rather than being
 scored around. See [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §B.
 

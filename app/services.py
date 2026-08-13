@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from app.clients.chainlink import ChainlinkClient
+from app.clients.dexscreener import DexScreenerClient
+from app.clients.geckoterminal import GeckoTerminalClient
 from app.clients.explorer import ExplorerClient
 from app.clients.okx_market import OKXMarketClient
 from app.clients.okx_trade import OKXTradeClient
@@ -23,12 +25,15 @@ class Services:
     node: RobinhoodNodeClient
     data: RobinhoodDataClient
     explorer: ExplorerClient
+    dexscreener: DexScreenerClient
+    geckoterminal: GeckoTerminalClient
     market: OKXMarketClient
     trade: OKXTradeClient
     chainlink: ChainlinkClient
 
     async def aclose(self) -> None:
-        for c in (self.node, self.data, self.explorer, self.market, self.trade):
+        for c in (self.node, self.data, self.explorer, self.dexscreener,
+                  self.geckoterminal, self.market, self.trade):
             await c.aclose()
 
 
@@ -55,6 +60,18 @@ def build_services(settings: Settings | None = None) -> Services:
     explorer = ExplorerClient(
         c.explorer_base_url if c.explorer_enabled else "", timeout_s=c.explorer_timeout_s, **common
     )
+    dexscreener = DexScreenerClient(
+        c.dexscreener_base_url if c.dexscreener_enabled else "",
+        chain_id=c.dexscreener_chain_slug,
+        timeout_s=c.dexscreener_timeout_s,
+        **common,
+    )
+    geckoterminal = GeckoTerminalClient(
+        c.geckoterminal_base_url if c.geckoterminal_enabled else "",
+        network=c.geckoterminal_network,
+        timeout_s=c.geckoterminal_timeout_s,
+        **common,
+    )
     market = OKXMarketClient(
         c.okx_web3_base_url if c.okx_market_enabled else "",
         c.okx_api_key,
@@ -76,4 +93,5 @@ def build_services(settings: Settings | None = None) -> Services:
     chainlink = ChainlinkClient(node, c.chainlink_feeds_json if c.chainlink_enabled else "{}")
 
     return Services(settings=c, node=node, data=data, explorer=explorer,
+                    dexscreener=dexscreener, geckoterminal=geckoterminal,
                     market=market, trade=trade, chainlink=chainlink)

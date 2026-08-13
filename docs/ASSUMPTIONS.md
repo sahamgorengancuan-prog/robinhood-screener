@@ -29,14 +29,14 @@ enforced by `test_every_gate_rejects_an_empty_snapshot`.
 | `holder_growth_24h_pct` | Extrapolated from two snapshots ≥1h apart | Needs history. First-ever snapshot always yields `None` → WATCH. |
 | `token_age_hours` | Binary search for the first block with code | Accurate, but costs ~25 RPC calls per new token. Cached on `Token.deployed_at`. |
 | `price_vs_7d_base_pct` | Current price vs **median** of the 7d window | Median, not mean, so one blow-off candle cannot redefine the base. Needs ≥3 historical points. |
-| `buy_ratio_24h` | Buy vs sell transfer counts | **Not currently populated by any wired source.** Stays `None` → the gate degrades to LIVE_ONLY. Classifying a transfer as buy or sell requires DEX-router-aware log decoding — see Roadmap phase 4. |
+| `buy_ratio_24h` | DexScreener `txns.h24.buys` / `.sells` on the deepest pool | **Wired.** Counts come from one pool, so a token whose flow is split across venues is measured on its dominant pool only. Both sides must be present or the ratio stays `None`. |
 | `sniper_wallet_pct`, `bundled_buy_pct` | Same — requires early-block log analysis | `None` today → LIVE_ONLY blockers. The gates exist and are tested; the feed is not wired. |
 | `days_to_major_unlock` | Vesting schedules | **Not discoverable on-chain in the general case.** Stays `None` → LIVE_ONLY. The screener does not pretend to know a token is unlock-safe. |
 
 ### What "not wired" means in practice
 
-Four metrics (`buy_ratio_24h`, `sniper_wallet_pct`, `bundled_buy_pct`,
-`days_to_major_unlock`) have gates and tests but no live data source in this MVP.
+Three metrics (`sniper_wallet_pct`, `bundled_buy_pct`, `days_to_major_unlock`)
+have gates and tests but no live data source.
 Their gates are `LIVE_ONLY`, so a token missing them can reach ALERT and
 PAPER_BUY but **never LIVE_BUY**. This is deliberate: the system tells you what
 it doesn't know instead of quietly scoring around it. Wire them (Roadmap phase 4)

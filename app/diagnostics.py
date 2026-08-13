@@ -301,6 +301,114 @@ async def check_explorer(svc: Services, c: Settings, address: str | None) -> Che
                        f"contract verified: {verified}", ms, detail={"is_verified": verified})
 
 
+async def check_dexscreener(svc: Services, c: Settings, address: str | None) -> CheckResult:
+    if not c.dexscreener_enabled:
+        return CheckResult("DexScreener", "Market data", SKIP, "DEXSCREENER_ENABLED=false",
+                           fix="This is the only free source of buy/sell counts. Without it "
+                               "buy_ratio_24h is unavailable and the flow gate blocks live buys.")
+    if not c.dexscreener_chain_slug:
+        return CheckResult(
+            "DexScreener", "Market data", WARN, "DEXSCREENER_CHAIN_SLUG not set",
+            fix="Without a chain slug the client accepts pools from ANY chain, which can price "
+                "a different token that happens to share an address. Set it in the Setup tab.",
+        )
+    if not address:
+        return CheckResult("DexScreener", "Market data", SKIP, "no token address supplied",
+                           fix="Enter a token address to verify the response contract.")
+
+    res, ms, err = await _timed(lambda: svc.dexscreener.probe(address))
+    if err:
+        return CheckResult("DexScreener", "Market data", FAIL, str(err)[:180], ms,
+                           fix="Public endpoint, no key needed — a failure here is usually "
+                               "network egress or a rate limit (~300 req/min).")
+    if res.get("ok") is False:
+        return CheckResult("DexScreener", "Market data", FAIL, res.get("reason", "contract mismatch"), ms,
+                           detail=res, fix=res.get("reason", ""))
+    if res.get("pairs") == 0:
+        return CheckResult("DexScreener", "Market data", WARN,
+                           "reachable, but no pools indexed for this token", ms, detail=res,
+                           fix="Normal for a very new or unlisted token — metrics stay "
+                               "unavailable and the token routes to WATCH.")
+
+    unparsed = res.get("unparsed") or []
+    status = OK if not unparsed else WARN
+    return CheckResult(
+        "DexScreener", "Market data", status,
+        f"{res.get('pairs')} pool(s) · {len(res.get('parsed', []))} fields parsed"
+        + (f" · missing: {', '.join(unparsed)}" if unparsed else ""),
+        ms, detail=res,
+        fix=(f"Unparsed: {', '.join(unparsed)}. Compare 'observed_keys' with "
+             f"DexScreenerClient.extract().") if unparsed else "",
+    )
+
+
+async def check_geckoterminal(svc: Services, c: Settings, address: str | None) -> CheckResult:
+    if not c.geckoterminal_enabled:
+        return CheckResult("GeckoTerminal", "Market data", SKIP, "GECKOTERMINAL_ENABLED=false",
+                           fix="This is the independent second price source. Without it, price "
+                               "reconciliation has nothing to cross-check and LIVE_BUY is "
+                               "unreachable no matter how high the score.")
+    if not svc.geckoterminal.enabled:
+        return CheckResult(
+            "GeckoTerminal", "Market data", WARN, "GECKOTERMINAL_NETWORK not set",
+            fix="Set the network slug in the Setup tab. Without a second price source, "
+                "gate_price_agreement stays LIVE_ONLY and LIVE_BUY can never be reached.",
+        )
+    if not address:
+        return CheckResult("GeckoTerminal", "Market data", SKIP, "no token address supplied")
+
+    res, ms, err = await _timed(lambda: svc.geckoterminal.probe(address))
+    if err:
+        return CheckResult("GeckoTerminal", "Market data", FAIL, str(err)[:180], ms)
+    if res.get("ok") is False:
+        return CheckResult("GeckoTerminal", "Market data", FAIL,
+                           res.get("error") or res.get("reason", "contract mismatch"), ms,
+                           detail=res, fix=res.get("hint", ""))
+
+    unparsed = res.get("unparsed") or []
+    status = OK if not unparsed else WARN
+    return CheckResult(
+        "GeckoTerminal", "Market data", status,
+        f"{len(res.get('parsed', []))} fields parsed"
+        + (f" · missing: {', '.join(unparsed)}" if unparsed else ""),
+        ms, detail=res,
+        fix=(f"Unparsed: {', '.join(unparsed)}. Compare 'observed_keys' with "
+             f"GeckoTerminalClient.extract().") if unparsed else "",
+    )
+
+
+async def check_price_sources(c: Settings, results: list[CheckResult]) -> CheckResult:
+    """How many independent price feeds are actually live.
+
+    This is the single most misunderstood requirement in the project: two are
+    needed for the median and divergence check, and with fewer than two,
+    LIVE_BUY is unreachable regardless of score.
+    """
+    live = []
+    by_name = {r.name: r for r in results}
+    if by_name.get("DexScreener", CheckResult("", "", SKIP, "")).status in (OK, WARN):
+        live.append("dex_pool")
+    if by_name.get("GeckoTerminal", CheckResult("", "", SKIP, "")).status in (OK, WARN):
+        live.append("geckoterminal")
+    if by_name.get("OKX Market", CheckResult("", "", SKIP, "")).status == OK:
+        live.append("okx_market")
+    if c.chainlink_enabled:
+        live.append("chainlink")
+
+    if len(live) >= 2:
+        return CheckResult("Price cross-check", "Market data", OK,
+                           f"{len(live)} independent sources: {', '.join(live)}",
+                           detail={"sources": live})
+    return CheckResult(
+        "Price cross-check", "Market data", WARN,
+        f"only {len(live)} price source ({', '.join(live) or 'none'}) — LIVE_BUY unreachable",
+        detail={"sources": live},
+        fix="Price reconciliation needs two independent sources to take a median and measure "
+            "divergence. With one, gate_price_agreement stays LIVE_ONLY forever. Enable "
+            "GeckoTerminal (set its network slug) or configure Chainlink feeds.",
+    )
+
+
 async def check_okx_market(svc: Services, c: Settings) -> CheckResult:
     if not svc.market.enabled:
         return CheckResult("OKX Market", "OKX", SKIP, "OKX_MARKET_ENABLED=false")
@@ -471,25 +579,29 @@ async def run_all_checks(
     try:
         results: list[CheckResult] = [check_run_mode(c), await check_database(c)]
 
-        node_res, data_res, explorer_res, market_res, public_res, private_res, link_res = (
-            await asyncio.gather(
-                check_node_rpc(svc, c),
-                check_data_api(svc, c),
-                check_explorer(svc, c, address),
-                check_okx_market(svc, c),
-                check_okx_public(svc, c),
-                check_okx_private(svc, c),
-                check_chainlink(svc, c),
-                return_exceptions=False,
-            )
+        (node_res, data_res, explorer_res, ds_res, gt_res,
+         market_res, public_res, private_res, link_res) = await asyncio.gather(
+            check_node_rpc(svc, c),
+            check_data_api(svc, c),
+            check_explorer(svc, c, address),
+            check_dexscreener(svc, c, address),
+            check_geckoterminal(svc, c, address),
+            check_okx_market(svc, c),
+            check_okx_public(svc, c),
+            check_okx_private(svc, c),
+            check_chainlink(svc, c),
+            return_exceptions=False,
         )
         results.extend(node_res)
         results.append(data_res)
         results.append(explorer_res)
+        results.append(ds_res)
+        results.append(gt_res)
         results.append(market_res)
         results.extend(public_res)
         results.append(private_res)
         results.append(link_res)
+        results.append(await check_price_sources(c, results))
 
         if address:
             results.extend(await check_node_token(svc, address))

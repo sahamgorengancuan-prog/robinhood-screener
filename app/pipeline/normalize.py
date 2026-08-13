@@ -43,6 +43,8 @@ class RawBundle:
     def __init__(self, token: TokenRef) -> None:
         self.token = token
         self.okx_price_info: dict[str, Any] | None = None
+        self.dexscreener: dict[str, Any] | None = None
+        self.geckoterminal: dict[str, Any] | None = None
         self.okx_basic_info: dict[str, Any] | None = None
         self.okx_inst_id: str | None = None
         self.okx_available: bool | None = None
@@ -75,6 +77,25 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
     snap = NormalizedSnapshot(token=bundle.token, captured_at=now)
 
     # ------------------------------------------------------------ market data
+    #
+    # Precedence is deliberate. `set_field` ignores None and does NOT overwrite,
+    # so whichever source is applied FIRST wins for a given field. DexScreener
+    # goes first because it is the only source reporting per-window volume and
+    # buy/sell counts, and mixing windows from different providers would make
+    # the spike and turnover gates compare unlike numbers.
+    ds: dict[str, Any] = bundle.dexscreener or {}
+    if ds:
+        for field in (
+            "volume_5m", "volume_1h", "volume_24h", "tx_count_24h",
+            "price_change_1h_pct", "price_change_24h_pct", "market_cap_usd", "fdv_usd",
+        ):
+            snap.set_field(field, ds.get(field), "dexscreener")
+
+    gt: dict[str, Any] = bundle.geckoterminal or {}
+    if gt:
+        for field in ("volume_24h", "market_cap_usd", "fdv_usd"):
+            snap.set_field(field, gt.get(field), "geckoterminal")
+
     okx: dict[str, Any] = {}
     if bundle.okx_price_info:
         from app.clients.okx_market import OKXMarketClient
@@ -88,11 +109,17 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
             snap.set_field(field, okx.get(field), "okx_market")
 
     # -------------------------------------------------------- price consensus
+    #
+    # Three independent venues can contribute. Two are enough for the median and
+    # the divergence check that `gate_price_agreement` requires; with one, that
+    # gate degrades to LIVE_ONLY and no amount of score reaches LIVE_BUY.
     price_sources: dict[str, float] = {}
     if okx.get("price_usd"):
         price_sources["okx_market"] = float(okx["price_usd"])
     if bundle.dex_pool_price:
         price_sources["dex_pool"] = float(bundle.dex_pool_price)
+    if gt.get("price_usd"):
+        price_sources["geckoterminal"] = float(gt["price_usd"])
     if bundle.chainlink_price:
         price_sources["chainlink"] = float(bundle.chainlink_price)
 
@@ -110,16 +137,22 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
         liq_sources["okx_market"] = float(okx["liquidity_usd"])
     if bundle.dex_pool_liquidity_usd:
         liq_sources["dex_pool"] = float(bundle.dex_pool_liquidity_usd)
+    if gt.get("liquidity_usd"):
+        liq_sources["geckoterminal"] = float(gt["liquidity_usd"])
     merged_liq = reconcile_liquidity(liq_sources)
     if merged_liq is not None:
         snap.set_field("liquidity_usd", merged_liq, "reconciled(min)")
         snap.raw["liquidity_sources"] = liq_sources
 
     # ------------------------------------------------------------ supply/meta
+    # On-chain totalSupply() wins: it is the only one that cannot be wrong.
     supply = bundle.onchain_supply
+    supply_src = "rh_node"
+    if supply is None and gt.get("total_supply"):
+        supply, supply_src = float(gt["total_supply"]), "geckoterminal"
     if supply is None and okx.get("total_supply"):
-        supply = float(okx["total_supply"])
-    snap.set_field("total_supply", supply, "rh_node" if bundle.onchain_supply else "okx_market")
+        supply, supply_src = float(okx["total_supply"]), "okx_market"
+    snap.set_field("total_supply", supply, supply_src)
     if bundle.onchain_decimals is not None:
         snap.token.decimals = bundle.onchain_decimals
 
