@@ -1,173 +1,66 @@
 # Implementation Roadmap
 
-Phases 0–3 are **built and tested in this repo**. Phases 4+ are the ordered
-backlog, with the reasoning for the order.
+## Phase 0 — foundation ✅
 
----
+- Python/FastAPI/APScheduler/SQLite WAL
+- `.env` configuration and conservative defaults
+- shared HTTP retry, backoff, rate limit, TTL cache
+- normalized optional-field schema; missing never becomes zero
 
-## Phase 0 — Foundations ✅ built
+## Phase 1 — verified data clients ✅
 
-| Step | Deliverable | Status |
-|---|---|---|
-| 0.1 | Project structure, `pyproject`, pinned `requirements.txt` | ✅ |
-| 0.2 | `.env` config with every threshold in one auditable place | ✅ `app/config.py` |
-| 0.3 | SQLite schema + WAL + session scope | ✅ `app/models.py`, `app/db.py` |
-| 0.4 | Normalized schema where **missing ≠ zero** | ✅ `app/schemas.py` |
-| 0.5 | Shared HTTP client: retry, token-bucket, TTL cache | ✅ `app/clients/base.py` |
+- Robinhood Node JSON-RPC and recent mint-log discovery
+- Alchemy Token/Transfers/Portfolio client; no fictional REST paths
+- Blockscout source verification/holder fallback
+- OKX OnchainOS Basic/Premium clients with exact documented parameters
+- Chainlink staleness + L2 sequencer checks
+- runtime probe/diagnostics
 
-**Exit criteria:** `make test` green, `make demo` renders alerts offline. ✅
+## Phase 2 — screening engine ✅
 
----
+- staged collection to avoid decimals/holder race
+- price median, liquidity minimum, holder/pool exclusions
+- recent-trade wash sample and advanced sniper/bundle/suspicious/dev-risk metrics
+- hard gates and score weights 30/25/20/15/10
+- strict `REJECT/WATCH/ALERT/PAPER_BUY/LIVE_BUY` semantics
+- manual, source-backed unlock overrides
 
-## Phase 1 — Read-only data layer ✅ built
+## Phase 3 — safe execution scaffold ✅
 
-| Step | Deliverable | Status |
-|---|---|---|
-| 1.1 | Node API client (JSON-RPC, ERC-20, bytecode scan, proxy detection) | ✅ |
-| 1.2 | Data API client (config-driven paths, tolerant parsing) | ✅ disabled by default |
-| 1.3 | Blockscout client for contract verification | ✅ |
-| 1.4 | OKX Market client with correct request signing | ✅ |
-| 1.5 | OKX Trading client — read paths only at this stage | ✅ |
-| 1.6 | Chainlink oracle reader | ✅ optional |
-| 1.7 | `probe_endpoints.py` to verify reality before trusting output | ✅ |
+- contract-aware OKX CEX identity; no symbol-only live buy
+- fresh CEX book spread and order-size VWAP slippage
+- balance, exposure, daily order and position caps
+- post-only limit, round down, intent-before-send, poll fills, TTL cancel
+- env/file/DB kill switch and 1H-candle safe mode
+- paper and demo trading support
 
-**Exit criteria:** `make probe` reports OK for Node + Explorer + OKX Market.
-→ *This is where you are when you first clone the repo.*
+## Phase 4 — validation before capital ⬜ operator work
 
----
+1. Run at least two weeks `ALERT_ONLY`.
+2. Audit false positives, missing fields, API quotas, and cross-source price drift.
+3. Add reviewed tokenomics overrides only with source URLs.
+4. Run at least one week `PAPER` + `OKX_SIMULATED=true`.
+5. Rehearse kill switch and provider outage scenarios.
+6. Set live thresholds from observed distribution, not from desired trade count.
 
-## Phase 2 — Screening brain ✅ built
+## Phase 5 — required before unattended LIVE ⬜
 
-| Step | Deliverable | Status |
-|---|---|---|
-| 2.1 | Derived metrics (HHI, slippage, spread, base/drawdown) | ✅ `pipeline/metrics.py` |
-| 2.2 | Normalizer with per-field provenance | ✅ `pipeline/normalize.py` |
-| 2.3 | Price/liquidity reconciliation | ✅ `util/reconcile.py` |
-| 2.4 | 21 risk gates across 4 severities | ✅ `pipeline/risk.py` |
-| 2.5 | 5-component weighted score (30/25/20/15/10) | ✅ `pipeline/scoring.py` |
-| 2.6 | 5-state decision engine with strict precedence | ✅ `pipeline/decision.py` |
-| 2.7 | Alert formatter + 4 sinks with dedupe | ✅ `alerts/` |
-| 2.8 | Ingestion cycle + APScheduler + FastAPI + dashboard | ✅ |
+- simulated on-chain sell through the actual router to detect conditional honeypots
+- verified proxy implementation scan and upgrade/admin monitoring
+- `position` table, exit policy, stop/target/liquidity-drop exits
+- fee-aware PnL, fill reconciliation, stale/open-order recovery after restart
+- Alembic migrations and encrypted/managed secrets
 
-**Exit criteria:** run `ALERT_ONLY` for 2 weeks; review every alert by hand.
+## Phase 6 — only after measured need ⬜
 
----
-
-## Phase 3 — Execution scaffolding ✅ built
-
-| Step | Deliverable | Status |
-|---|---|---|
-| 3.1 | Kill switch (3 independent triggers, fails closed) | ✅ |
-| 3.2 | Automatic safe mode on violent reference moves | ✅ |
-| 3.3 | Exposure accounting, paper and live tracked separately | ✅ |
-| 3.4 | Pure order-safety checks | ✅ `execution/order_safety.py` |
-| 3.5 | Paper executor sharing the live code path | ✅ |
-| 3.6 | Live executor: 9 sequential guards, post-only only | ✅ |
-| 3.7 | 251 tests covering scoring, gates, decisions, order safety | ✅ |
-
-**Exit criteria:** 1 week of `PAPER` with `OKX_SIMULATED=true`, and every
-PAPER_BUY reviewed manually.
-
----
-
-## Phase 3.5 — Operator surface ✅ built
-
-| Step | Deliverable | Status |
-|---|---|---|
-| 3.5.1 | Structured diagnostics: status, latency, observed API fields, remediation | ✅ `app/diagnostics.py` |
-| 3.5.2 | Gradio control panel, 6 tabs | ✅ `app/ui/gradio_app.py` |
-| 3.5.3 | Terminal probe sharing the same checks | ✅ `scripts/probe_endpoints.py` |
-| 3.5.4 | Threshold Lab — live gate/score recomputation from sliders | ✅ |
-| 3.5.5 | Read-only Token Inspector (no writes, no orders) | ✅ |
-
-The UI is deliberately incapable of placing an order or editing risk limits;
-both are asserted by tests. It binds to loopback and makes no outbound
-requests of its own.
-
-**Exit criteria:** the connection tab reports "Ready for PAPER" against your
-real endpoints.
-
----
-
-## Phase 3.6 — Windows packaging ✅ built
-
-| Step | Deliverable | Status |
-|---|---|---|
-| 3.6.1 | One-click pipeline runner, logic in tested Python | ✅ `scripts/one_click.py` |
-| 3.6.2 | A single double-clickable entry point | ✅ `START.bat` |
-| 3.6.3 | Emergency stop that needs no Python or venv | ✅ `EMERGENCY_STOP.bat` |
-| 3.6.4 | Console encoding fix + ASCII fallback for `cmd.exe` | ✅ `app/util/console.py` |
-| 3.6.5 | Static guards for batch pitfalls (CRLF, `&`, labels, `pause`) | ✅ `tests/test_windows.py` |
-| 3.6.6 | Typed confirmation before any unattended real-money run | ✅ |
-| 3.6.7 | Collapsed to a single entry point; setup and pipeline control moved into the panel | ✅ `START.bat` |
-| 3.6.8 | Dependency stack raised to versions with cp314 wheels; verified on 3.14.7 | ✅ |
-
-Batch script cannot be executed on the machine it was written on, so it is kept
-to "find Python, make a venv, call the tested script", and everything checkable
-statically is asserted in tests.
-
-**Exit criteria:** `START.bat` on a clean Windows box installs, configures and
-opens the panel without touching a terminal.
-
----
-
-## Phase 4 — Close the data gaps ⬜ next
-
-**This is the highest-value remaining work.** Four gates currently degrade to
-LIVE_ONLY because nothing feeds them (see `docs/ASSUMPTIONS.md` §B).
-
-| Step | Work | Why it matters |
-|---|---|---|
-| 4.1 | Decode DEX swap logs to classify buys vs sells | Unblocks `buy_ratio_24h` — the main organic-flow signal |
-| 4.2 | First-N-block holder analysis after deployment | Unblocks `sniper_wallet_pct` |
-| 4.3 | Same-block multi-wallet buy clustering | Unblocks `bundled_buy_pct` |
-| 4.4 | Optional manual unlock-schedule table (`token_unlock`) | Unblocks `days_to_major_unlock` honestly — entered by hand, never guessed |
-| 4.5 | Simulated sell via `eth_call` against the router | Real honeypot detection, which bytecode scanning cannot do |
-
-Until 4.1–4.4 land, expect LIVE_BUY to fire rarely. That is correct behaviour,
-not a bug.
-
-## Phase 5 — Position management ⬜
-
-| Step | Work |
+| Trigger | Upgrade |
 |---|---|
-| 5.1 | `position` table: entry, size, current mark, unrealized PnL |
-| 5.2 | Stop-loss and take-profit rules (sell logic — currently absent entirely) |
-| 5.3 | Liquidity-drop exit trigger |
-| 5.4 | Daily PnL report through the alert sinks |
+| Public/free RPC rate-limit or archive gap | paid shared RPC |
+| Need pair event below polling cadence | Node WebSocket |
+| OKX REST cannot meet measured preflight latency | paid OKX WS channel |
+| More than one process/writer | Postgres + Redis/advisory lock |
+| Snapshot table >10M rows | retention/partitioning/Postgres |
+| Enough labelled outcomes | replay/backtest, then calibration; not ML before data |
 
-**Do not run live unattended before this phase.** The system can currently enter
-a position and cannot exit one.
-
-## Phase 6 — Real-time layer ⬜
-
-| Step | Work | Gate |
-|---|---|---|
-| 6.1 | Node WebSocket subscription for new-pair events | Only if 5-minute polling proves too slow |
-| 6.2 | OKX liquidity WebSocket channel | Only if REST rate limits bite |
-| 6.3 | Redis for cross-process cache | **Only if** you actually run multiple processes |
-
-Each item here is explicitly gated on evidence. Adding them without that
-evidence is the expensive mistake this design is trying to avoid.
-
-## Phase 7 — Scale ⬜
-
-| Trigger | Action |
-|---|---|
-| `token_snapshot` > ~10M rows, or a second writer | Migrate SQLite → Postgres (`DATABASE_URL` is the only change; add Alembic) |
-| Reviewing alerts becomes a chore | Build a real dashboard with charts |
-| Threshold tuning becomes guesswork | Replay stored snapshots against modified thresholds — the append-only snapshot table already supports this |
-
----
-
-## What is deliberately not on this roadmap
-
-- **Machine-learned scoring.** There is no labelled outcome data, and there
-  won't be until the system has run for months. A model trained on nothing is
-  worse than transparent hand-tuned weights you can argue with.
-- **More chains.** Get one chain right first.
-- **Higher frequency.** The strategy is base-building accumulation. Latency is
-  not the edge, and pretending otherwise invites HFT-shaped infrastructure costs
-  for no return.
-- **Bigger position sizes.** The correct response to the system working well is
-  a longer track record, not more capital.
+Full node remains outside core unless shared providers demonstrably cannot
+serve required archive/log workloads. See `ENDPOINTS.md` for official hardware.

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 
 from app.clients.rh_node import RobinhoodNodeClient, _hex_to_int
 
@@ -23,13 +24,25 @@ SEL_DECIMALS = "0x313ce567"           # decimals()
 
 
 class ChainlinkClient:
-    def __init__(self, node: RobinhoodNodeClient, feeds_json: str = "{}") -> None:
+    def __init__(
+        self,
+        node: RobinhoodNodeClient,
+        feeds_json: str = "{}",
+        heartbeats_json: str = "{}",
+        *,
+        sequencer_feed: str = "",
+        grace_period_s: int = 3600,
+    ) -> None:
         self.node = node
         try:
             self.feeds: dict[str, str] = json.loads(feeds_json or "{}")
+            self.heartbeats: dict[str, int] = json.loads(heartbeats_json or "{}")
         except json.JSONDecodeError:
             log.warning("CHAINLINK_FEEDS_JSON is not valid JSON; disabling oracle checks")
             self.feeds = {}
+            self.heartbeats = {}
+        self.sequencer_feed = sequencer_feed
+        self.grace_period_s = grace_period_s
 
     @property
     def enabled(self) -> bool:
@@ -38,6 +51,9 @@ class ChainlinkClient:
     async def latest_price(self, symbol: str) -> float | None:
         feed = self.feeds.get(symbol.upper())
         if not feed or not self.node.enabled:
+            return None
+        if self.sequencer_feed and not await self._sequencer_healthy():
+            log.warning("chainlink check skipped: L2 sequencer down or inside grace period")
             return None
         try:
             raw = await self.node.call(feed, SEL_LATEST_ROUND_DATA)
@@ -55,6 +71,22 @@ class ChainlinkClient:
             return None
         updated_at = int(body[192:256], 16)
         decimals = _hex_to_int(dec_raw) or 8
-        if answer == 0 or updated_at == 0:
+        heartbeat = int(self.heartbeats.get(symbol.upper(), 0))
+        if answer <= 0 or updated_at == 0 or heartbeat <= 0:
+            return None
+        if time.time() - updated_at > heartbeat:
+            log.warning("chainlink %s feed stale: age exceeds %ss heartbeat", symbol, heartbeat)
             return None
         return answer / (10**decimals)
+
+    async def _sequencer_healthy(self) -> bool:
+        try:
+            raw = await self.node.call(self.sequencer_feed, SEL_LATEST_ROUND_DATA)
+        except Exception:  # noqa: BLE001 - unavailable means not safe
+            return False
+        if not raw or len(raw) < 2 + 64 * 5:
+            return False
+        body = raw[2:]
+        answer = int(body[64:128], 16)
+        started_at = int(body[128:192], 16)
+        return answer == 0 and started_at > 0 and time.time() - started_at > self.grace_period_s

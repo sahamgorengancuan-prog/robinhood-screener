@@ -49,42 +49,68 @@ HOLDER_LOG_LOOKBACK_BLOCKS = 200_000
 async def discover_tokens(svc: Services) -> list[TokenRef]:
     """Candidate tokens for this cycle.
 
-    Primary source is the Data API's token feed. When it is disabled or fails,
-    we fall back to whatever is already tracked in the DB rather than inventing
-    candidates — this screener never guesses at contract addresses.
+    Sources are merged and deduplicated: OKX's official hot-token feed for
+    trending/active tokens, recent ERC-20 mint logs from the Node API for new
+    contracts, then the local tracked set. Alchemy has no documented global
+    token-list endpoint, so it is deliberately not used for discovery.
     """
     refs: list[TokenRef] = []
 
-    if svc.data.enabled:
+    chain_index = str(svc.settings.rh_chain_id or "")
+    if svc.market.enabled and svc.settings.okx_hot_token_enabled and chain_index:
         try:
-            for item in await svc.data.list_tokens(limit=svc.settings.max_tokens_per_cycle):
-                addr = item.get("address") or item.get("contract_address") or item.get("contractAddress")
+            rows = await svc.market.hot_tokens(
+                chain_index,
+                time_frame=svc.settings.okx_hot_token_timeframe,
+                limit=svc.settings.max_tokens_per_cycle,
+                filters={
+                    "liquidityMin": svc.settings.min_liquidity_usd,
+                    "volumeMin": svc.settings.min_volume_24h_usd,
+                    "holdersMin": svc.settings.min_unique_holders,
+                    "top10HoldPercentMax": svc.settings.max_top10_holder_pct,
+                    "priceChangePercentMax": svc.settings.max_price_change_24h_pct,
+                },
+            )
+            for item in rows:
+                addr = item.get("tokenContractAddress")
                 if not addr:
                     continue
                 refs.append(
                     TokenRef(
-                        address=str(addr),
-                        symbol=item.get("symbol"),
-                        name=item.get("name"),
-                        decimals=to_int(item.get("decimals")),
+                        address=str(addr).lower(),
+                        symbol=item.get("tokenSymbol"),
+                        name=item.get("tokenName"),
+                        decimals=to_int(item.get("decimal")),
+                        discovery_data=item,
                     )
                 )
         except ClientError as e:
-            log.error("token discovery via Data API failed: %s", e)
+            log.error("token discovery via OKX hot-token failed: %s", e)
 
-    if not refs:
-        with session_scope() as s:
-            rows = s.execute(
-                select(Token).where(Token.muted.is_(False)).limit(svc.settings.max_tokens_per_cycle)
-            ).scalars().all()
-            refs = [
-                TokenRef(chain=t.chain, address=t.address, symbol=t.symbol, name=t.name, decimals=t.decimals)
-                for t in rows
-            ]
-        if refs:
-            log.info("discovery fell back to %d tracked tokens", len(refs))
+    if svc.node.enabled:
+        try:
+            latest = await svc.node.block_number()
+            if latest is not None:
+                start = max(0, latest - svc.settings.discovery_lookback_blocks + 1)
+                for address in await svc.node.discover_minted_contracts(start, latest):
+                    refs.append(TokenRef(address=address))
+        except ClientError as e:
+            log.error("token discovery via mint logs failed: %s", e)
 
-    return refs[: svc.settings.max_tokens_per_cycle]
+    with session_scope() as s:
+        rows = s.execute(
+            select(Token).where(Token.muted.is_(False)).limit(svc.settings.max_tokens_per_cycle)
+        ).scalars().all()
+        refs.extend(
+            TokenRef(chain=t.chain, address=t.address, symbol=t.symbol, name=t.name, decimals=t.decimals)
+            for t in rows
+        )
+
+    unique: dict[str, TokenRef] = {}
+    for ref in refs:
+        unique.setdefault(ref.address.lower(), ref)
+
+    return list(unique.values())[: svc.settings.max_tokens_per_cycle]
 
 
 # ===========================================================================
@@ -94,6 +120,10 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
     """Gather everything about one token. Every source is individually guarded."""
     b = RawBundle(ref)
     addr = ref.address
+    if ref.discovery_data:
+        b.okx_hot = dict(ref.discovery_data)
+        b.buys_24h = to_int(b.okx_hot.get("txsBuy"))
+        b.sells_24h = to_int(b.okx_hot.get("txsSell"))
 
     async def _okx() -> None:
         if not svc.market.enabled:
@@ -114,28 +144,47 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
             b.okx_basic_info = await svc.market.token_basic_info(chain_index, addr)
         except ClientError:
             pass
+        for attr, factory in (
+            ("okx_advanced_info", lambda: svc.market.advanced_info(chain_index, addr)),
+            ("okx_holders", lambda: svc.market.holders(chain_index, addr)),
+            ("okx_trades", lambda: svc.market.trades(chain_index, addr)),
+            ("okx_liquidity", lambda: svc.market.top_liquidity(chain_index, addr)),
+        ):
+            try:
+                setattr(b, attr, await factory())
+            except ClientError as exc:
+                log.info("okx %s failed for %s: %s", attr, addr, exc)
 
     async def _okx_listing() -> None:
         """Resolve whether the token is tradable on OKX spot.
 
-        Matching is strict: the symbol must exist as a live SPOT instrument.
-        A name collision on a different asset is the most expensive possible bug
-        here, so an unresolved symbol yields False, never a guess.
+        Matching is contract-aware: symbol + chain label + ctAddr suffix + an
+        exact live SPOT pair. Symbol-only matching can buy a different asset.
         """
         if not ref.symbol:
             b.okx_available = None
             return
         try:
-            inst = await svc.trade.find_spot_instrument(ref.symbol, svc.settings.okx_quote_ccy)
+            inst, availability, reason = await svc.trade.resolve_contract_spot(
+                symbol=ref.symbol,
+                contract_address=addr,
+                chain_hint=svc.settings.okx_robinhood_chain_hint,
+                quote_ccy=svc.settings.okx_quote_ccy,
+            )
         except ClientError as e:
             log.info("okx instrument lookup failed for %s: %s", ref.symbol, e)
             b.okx_available = None
+            b.okx_identity_reason = str(e)
             return
         b.okx_inst_id = inst
-        b.okx_available = inst is not None
+        b.okx_available = availability
+        b.okx_identity_reason = reason
         if inst:
             try:
                 b.okx_book = await svc.trade.top_of_book(inst)
+                b.okx_book_slippage_bps = await svc.trade.buy_slippage_bps(
+                    inst, svc.settings.position_usd
+                )
             except ClientError:
                 b.okx_book = (None, None)
 
@@ -154,8 +203,8 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
         b.dexscreener = m
         b.dex_pool_price = m.get("price_usd")
         b.dex_pool_liquidity_usd = m.get("liquidity_usd")
-        b.buys_24h = m.get("buys_24h")
-        b.sells_24h = m.get("sells_24h")
+        b.buys_24h = b.buys_24h if b.buys_24h is not None else m.get("buys_24h")
+        b.sells_24h = b.sells_24h if b.sells_24h is not None else m.get("sells_24h")
         if not ref.symbol and m.get("symbol"):
             ref.symbol = m["symbol"]
         if not ref.name and m.get("name"):
@@ -194,6 +243,7 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
 
         try:
             latest = await svc.node.block_number()
+            b.latest_block = latest
             if latest:
                 deploy_block = await svc.node.find_deploy_block(addr, latest)
                 if deploy_block is not None:
@@ -209,43 +259,67 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
         b.contract_verified = await svc.explorer.is_verified(addr)
         b.explorer_counters = await svc.explorer.token_counters(addr)
 
-    async def _holders() -> None:
-        # Preferred: indexed holder list from the Data API.
-        if svc.data.enabled:
-            try:
-                res = await svc.data.token_holders(addr, limit=100)
-                b.rh_holders = res
-                balances = [
-                    h["balance"]
-                    for h in res["holders"]
-                    if h.get("balance") and str(h.get("address", "")).lower() not in NON_HOLDER_ADDRESSES
-                ]
-                if balances:
-                    b.holder_balances = balances
-                    b.holder_basis_is_partial = False
-                    return
-            except ClientError as e:
-                log.info("rh_data holders failed for %s: %s", addr, e)
+    async def _data_metadata() -> None:
+        if not svc.data.enabled:
+            return
+        try:
+            b.rh_meta = await svc.data.token_metadata(addr)
+        except ClientError as exc:
+            log.info("alchemy token metadata failed for %s: %s", addr, exc)
 
-        # Fallback: explorer top-holders list.
+    async def _indexed_activity() -> None:
+        if not svc.data.enabled or b.latest_block is None:
+            return
+        start = max(0, b.latest_block - svc.settings.discovery_lookback_blocks + 1)
+        try:
+            result = await svc.data.asset_transfers(
+                from_block=hex(start), contract_addresses=[addr], max_count=1000
+            )
+            rows = result.get("transfers")
+            b.rh_transfers = rows if isinstance(rows, list) else []
+        except ClientError as exc:
+            log.info("alchemy transfer history failed for %s: %s", addr, exc)
+
+    async def _holders() -> None:
+        # Alchemy's documented Token API is wallet-centric, not a global holder
+        # list. OKX holder percentages are normalized directly; Blockscout
+        # balances remain a free fallback.
+        if b.okx_holders:
+            return
         if svc.explorer.enabled:
             items = await svc.explorer.token_holders(addr)
             balances = []
+            excluded = set(NON_HOLDER_ADDRESSES)
+            excluded.update(
+                str(pool.get("poolAddress") or "").lower()
+                for pool in b.okx_liquidity
+                if pool.get("poolAddress")
+            )
             for it in items:
                 bal = to_float(it.get("value"))
                 holder = (it.get("address") or {})
                 haddr = holder.get("hash") if isinstance(holder, dict) else holder
-                if bal and str(haddr or "").lower() not in NON_HOLDER_ADDRESSES:
+                if bal and str(haddr or "").lower() not in excluded:
                     dec = b.onchain_decimals if b.onchain_decimals is not None else 18
                     balances.append(bal / (10**dec))
             if balances:
                 b.holder_balances = balances
                 b.holder_basis_is_partial = False
 
+    # Metadata/decimals and pool addresses must land before venue identity and
+    # holder calculations. This avoids the old race that silently assumed 18
+    # decimals while an on-chain read was still running.
     await asyncio.gather(
-        _dexscreener(), _geckoterminal(), _okx(), _okx_listing(),
-        _onchain(), _verification(), _holders(), return_exceptions=True
+        _dexscreener(), _geckoterminal(), _okx(), _onchain(), _verification(), _data_metadata(),
+        return_exceptions=True,
     )
+    if b.okx_basic_info:
+        ref.symbol = ref.symbol or b.okx_basic_info.get("tokenSymbol")
+        ref.name = ref.name or b.okx_basic_info.get("tokenName")
+    if b.rh_meta:
+        ref.symbol = ref.symbol or b.rh_meta.get("symbol")
+        ref.name = ref.name or b.rh_meta.get("name")
+    await asyncio.gather(_okx_listing(), _holders(), _indexed_activity(), return_exceptions=True)
 
     # Oracle sanity check on the quote asset, when configured.
     if svc.chainlink.enabled and ref.symbol:
@@ -266,7 +340,7 @@ def load_history(session: Session, token_id: int) -> dict[str, Any]:
         select(TokenSnapshot)
         .where(TokenSnapshot.token_id == token_id, TokenSnapshot.captured_at >= week_ago)
         .order_by(desc(TokenSnapshot.captured_at))
-        .limit(2016)  # 7d at 5-minute cadence
+        .limit(2016)  # supports up to a 5-minute cadence; default is 15 minutes
     ).scalars().all()
 
     prices = [r.price_usd for r in rows if r.price_usd]
@@ -357,6 +431,10 @@ def persist_snapshot(session: Session, token: Token, snap: NormalizedSnapshot) -
         volume_24h=snap.volume_24h,
         tx_count_24h=snap.tx_count_24h,
         buy_ratio_24h=snap.buy_ratio_24h,
+        trade_sample_size=snap.trade_sample_size,
+        unique_trader_ratio=snap.unique_trader_ratio,
+        top_trader_volume_pct=snap.top_trader_volume_pct,
+        filtered_trade_pct=snap.filtered_trade_pct,
         unique_holders=snap.unique_holders,
         top1_holder_pct=snap.top1_holder_pct,
         top10_holder_pct=snap.top10_holder_pct,
@@ -374,6 +452,7 @@ def persist_snapshot(session: Session, token: Token, snap: NormalizedSnapshot) -
         contract_flags=snap.contract_flags,
         sniper_wallet_pct=snap.sniper_wallet_pct,
         bundled_buy_pct=snap.bundled_buy_pct,
+        suspicious_holder_pct=snap.suspicious_holder_pct,
         days_to_major_unlock=snap.days_to_major_unlock,
         sources=snap.sources,
         missing_fields=snap.missing_fields,

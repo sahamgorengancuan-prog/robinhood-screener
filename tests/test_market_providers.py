@@ -1,11 +1,11 @@
 """Parser tests for the free market-data providers.
 
 These are the tests that make DexScreener and GeckoTerminal real integrations
-rather than placeholders. The live contracts could not be reached from the build
-environment, so the parsers are pinned against realistic recorded payloads and,
+rather than placeholders. Parsers are pinned against recorded payloads and,
 more importantly, against the ways real APIs go wrong: nulls, missing branches,
 numbers as strings, empty results, and pools from a *different chain* sharing an
-address.
+address. Runtime probes cover connectivity without making CI depend on the
+providers.
 
 The last one matters most. If chain filtering ever breaks, the screener prices a
 different asset and every downstream number is confidently wrong.
@@ -63,11 +63,10 @@ def test_no_pool_on_configured_chain_returns_none():
     assert client.select_primary_pair(load("dexscreener_token.json")["pairs"]) is None
 
 
-def test_blank_chain_slug_allows_any_chain():
-    """Documented behaviour: only safe when the address is known-unique."""
+def test_blank_chain_slug_disables_network_calls():
+    """Never query a same-address token from an unknown EVM chain."""
     client = DexScreenerClient(chain_id="")
-    primary = client.select_primary_pair(load("dexscreener_token.json")["pairs"])
-    assert primary["chainId"] == "ethereum"  # deepest overall
+    assert client.enabled is False
 
 
 def test_extract_maps_every_expected_field(ds):

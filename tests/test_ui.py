@@ -40,9 +40,9 @@ def state_of(banner_html: str) -> str:
 
 
 # ------------------------------------------------------------- threshold lab
-def test_lab_healthy_token_reaches_paper_buy():
+def test_lab_healthy_token_reaches_alert_in_default_read_only_mode():
     b, bars, gates = lab_evaluate(*default_lab_args())
-    assert state_of(b) == "PAPER_BUY"
+    assert state_of(b) == "ALERT"
     assert "TOTAL" in bars
 
 
@@ -95,7 +95,7 @@ def test_lab_agrees_with_the_real_engine():
 def test_lab_raising_score_thresholds_downgrades_the_state():
     normal = lab_evaluate(*default_lab_args())
     strict = lab_evaluate(*default_lab_args(alert_min=99.0, paper_min=99.5, live_min=99.9))
-    assert state_of(normal[0]) == "PAPER_BUY"
+    assert state_of(normal[0]) == "ALERT"
     assert state_of(strict[0]) == "REJECT"
 
 

@@ -301,11 +301,18 @@ def _snap_dict(s: TokenSnapshot) -> dict[str, Any]:
         "captured_at": s.captured_at.isoformat(),
         "price_usd": s.price_usd, "price_divergence_pct": s.price_divergence_pct,
         "liquidity_usd": s.liquidity_usd, "volume_24h": s.volume_24h, "volume_1h": s.volume_1h,
+        "trade_sample_size": s.trade_sample_size,
+        "unique_trader_ratio": s.unique_trader_ratio,
+        "top_trader_volume_pct": s.top_trader_volume_pct,
+        "filtered_trade_pct": s.filtered_trade_pct,
         "unique_holders": s.unique_holders, "top1_holder_pct": s.top1_holder_pct,
         "top10_holder_pct": s.top10_holder_pct, "holder_growth_24h_pct": s.holder_growth_24h_pct,
         "spread_bps": s.spread_bps, "slippage_bps": s.slippage_bps,
         "token_age_hours": s.token_age_hours, "price_change_24h_pct": s.price_change_24h_pct,
         "contract_flags": s.contract_flags, "tokenomics_flags": s.tokenomics_flags,
+        "sniper_wallet_pct": s.sniper_wallet_pct,
+        "bundled_buy_pct": s.bundled_buy_pct,
+        "suspicious_holder_pct": s.suspicious_holder_pct,
         "missing_fields": s.missing_fields, "sources": s.sources,
     }
 

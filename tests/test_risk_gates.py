@@ -51,10 +51,10 @@ def test_liquidity_between_floors_blocks_live_only(now, settings):
     assert summarize(results)["hard"] == []
 
 
-def test_missing_liquidity_is_data_not_pass(now, settings):
+def test_missing_liquidity_is_hard_reject(now, settings):
     snap = make_snapshot(now, liquidity_usd=None, slippage_bps=None)
     g = result_for("liquidity_min", snap, settings)
-    assert not g.passed and g.severity == Severity.DATA
+    assert not g.passed and g.severity == Severity.HARD
 
 
 def test_slippage_above_limit_is_hard(now, settings):
@@ -95,6 +95,19 @@ def test_one_sided_buying_rejected(now, settings):
 def test_persistent_distribution_rejected(now, settings):
     snap = make_snapshot(now, buy_ratio_24h=0.20)
     g = result_for("buy_sell_balance", snap, settings)
+    assert not g.passed and g.severity == Severity.HARD
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"filtered_trade_pct": 25.0},
+        {"unique_trader_ratio": 0.01},
+        {"top_trader_volume_pct": 60.0},
+    ],
+)
+def test_wash_sample_red_flags_are_hard(now, settings, overrides):
+    g = result_for("wash_sample", make_snapshot(now, **overrides), settings)
     assert not g.passed and g.severity == Severity.HARD
 
 
@@ -143,10 +156,10 @@ def test_unverified_contract_is_hard_reject(now, settings):
     assert not g.passed and g.severity == Severity.HARD
 
 
-def test_unknown_verification_blocks_live_but_not_alert(now, settings):
+def test_unknown_verification_is_hard_reject(now, settings):
     snap = make_snapshot(now, contract_verified=None)
     g = result_for("contract_verified", snap, settings)
-    assert not g.passed and g.severity == Severity.LIVE_ONLY
+    assert not g.passed and g.severity == Severity.HARD
 
 
 @pytest.mark.parametrize("flag", ["OWNER_CAN_MINT", "BLACKLIST", "NOT_A_CONTRACT"])
@@ -175,11 +188,11 @@ def test_imminent_unlock_rejected(now, settings):
     assert not g.passed and g.severity == Severity.HARD
 
 
-def test_unknown_unlock_schedule_does_not_fabricate_a_verdict(now, settings):
+def test_unknown_unlock_schedule_fails_closed(now, settings):
     snap = make_snapshot(now, days_to_major_unlock=None)
     g = result_for("unlock_proximity", snap, settings)
-    assert not g.passed and g.severity == Severity.LIVE_ONLY
-    assert "cannot rule out" in g.reason
+    assert not g.passed and g.severity == Severity.HARD
+    assert "fail-closed" in g.reason
 
 
 # ---------------------------------------------------------------- anti-chase

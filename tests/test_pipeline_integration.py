@@ -1,7 +1,7 @@
 """End-to-end pipeline test with a mocked transport.
 
 Everything below the socket is real: `BaseHTTPClient.request`, retry handling,
-JSON decoding, the provider parsers, the normalizer, all 21 gates, the scorer
+JSON decoding, the provider parsers, the normalizer, all 23 gates, the scorer
 and the decision engine. Only the network is faked, via `httpx.MockTransport`.
 
 This is what demonstrates the market-data providers are wired in rather than
@@ -92,6 +92,19 @@ def enrich_onchain(b: RawBundle) -> RawBundle:
     b.onchain_decimals = 18
     b.contract_verified = True
     b.contract_flags = []
+    b.contract_detail = {"is_proxy": False}
+    b.okx_advanced_info = {
+        "top10HoldPercent": "18", "sniperHoldingPercent": "3",
+        "bundleHoldingPercent": "4", "suspiciousHoldingPercent": "1",
+        "riskControlLevel": "1", "devRugPullTokenCount": "0", "tokenTags": [],
+    }
+    b.okx_trades = [
+        {
+            "userAddress": f"0x{i:040x}", "volume": "100",
+            "type": "buy" if i % 2 else "sell", "isFiltered": "0",
+        }
+        for i in range(100)
+    ]
     b.deployed_at = dt.datetime.now(dt.timezone.utc) - dt.timedelta(days=40)
     b.holder_balances = [4_800_000.0, 3_600_000.0] + [1_200_000.0] * 8 + [50_000.0] * 40
     # Holder COUNT comes from the explorer, not from the DEX aggregators —
@@ -105,7 +118,18 @@ def enrich_onchain(b: RawBundle) -> RawBundle:
 
 @pytest.fixture
 def settings():
-    return Settings(_env_file=None, database_url="sqlite:///:memory:", position_usd=25.0)
+    return Settings(
+        _env_file=None,
+        database_url="sqlite:///:memory:",
+        position_usd=25.0,
+        tokenomics_overrides_json=json.dumps({
+            TOKEN.lower(): {
+                "next_unlock_at": "2027-12-01T00:00:00Z",
+                "unlock_pct": 8.0,
+                "source_url": "https://project.example/tokenomics",
+            }
+        }),
+    )
 
 
 # ===========================================================================
@@ -167,7 +191,7 @@ async def test_full_pipeline_reaches_a_buy_state(settings):
     decision = decide(snap, gates, score, ctx, settings)
 
     assert score.total >= settings.score_paper_buy_min, f"score only {score.total}"
-    assert decision.state == DecisionState.PAPER_BUY
+    assert decision.state == DecisionState.ALERT
 
 
 @pytest.mark.asyncio

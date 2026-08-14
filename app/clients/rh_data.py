@@ -1,112 +1,135 @@
-"""Robinhood Chain Data API client (indexed data).
+"""Indexed Robinhood Chain data through Alchemy's official APIs.
 
-IMPORTANT — READ BEFORE TRUSTING THIS FILE
-------------------------------------------
-The exact request/response contract of the Robinhood Chain Data API could not
-be verified from this build environment (`docs.robinhood.com` is blocked by the
-egress proxy). Rather than invent field names and have them silently parse to
-wrong values, this client is built so that:
-
-  * every path is a config template (`RH_DATA_PATH_*` in .env),
-  * every field is read through `pick()` against several plausible key names,
-  * anything not found stays `None` and is recorded in `missing_fields`,
-  * the whole client is disabled by default (`RH_DATA_ENABLED=false`).
-
-Bring it up with `python -m scripts.probe_endpoints`, read the dumped payload,
-then set the paths and — if the key names differ from the candidates below —
-extend the candidate lists. `docs/ENDPOINTS.md` tracks what is verified.
+Robinhood's connection guide recommends Alchemy and its Robinhood API overview
+lists the Token and Transfers APIs. They are JSON-RPC methods on the Alchemy
+chain URL; there is no documented generic ``/tokens`` or ``/holders`` REST
+route. Discovery therefore lives in OKX hot-token plus ``eth_getLogs`` and
+holder concentration comes from OKX/Blockscout.
 """
 
 from __future__ import annotations
 
-import logging
 from typing import Any
 
-from app.clients.base import BaseHTTPClient, ClientError, pick, to_float, to_int
-
-log = logging.getLogger(__name__)
+from app.clients.base import BaseHTTPClient, ClientError
 
 
 class RobinhoodDataClient(BaseHTTPClient):
     name = "rh_data"
 
-    def __init__(self, base_url: str, api_key: str = "", *, paths: dict[str, str] | None = None, **kw: Any):
-        headers = {"Accept": "application/json"}
-        if api_key:
-            headers["Authorization"] = f"Bearer {api_key}"
-            headers["X-API-Key"] = api_key
-        super().__init__(base_url, headers=headers, **kw)
-        self.paths = paths or {}
-        self.enabled = bool(base_url)
+    def __init__(
+        self,
+        rpc_url: str = "",
+        api_key: str = "",
+        *,
+        portfolio_base_url: str = "https://api.g.alchemy.com",
+        network: str = "robinhood-mainnet",
+        **kw: Any,
+    ) -> None:
+        url = rpc_url.strip()
+        if not url and api_key:
+            url = f"https://robinhood-mainnet.g.alchemy.com/v2/{api_key}"
+        super().__init__(url, headers={"Accept": "application/json"}, **kw)
+        self.api_key = api_key
+        self.portfolio_base_url = portfolio_base_url.rstrip("/")
+        self.network = network
+        self.enabled = bool(url)
+        self._id = 0
 
-    def _path(self, key: str, **fmt: Any) -> str:
-        tpl = self.paths.get(key)
-        if not tpl:
-            raise ClientError(f"rh_data: no path configured for '{key}'")
-        return tpl.format(**fmt)
-
-    async def list_tokens(self, limit: int = 100, cursor: str | None = None) -> list[dict[str, Any]]:
-        """Discovery feed: new / trending / active tokens."""
+    async def rpc(self, method: str, params: list[Any]) -> Any:
         if not self.enabled:
-            return []
-        params: dict[str, Any] = {"limit": limit}
-        if cursor:
-            params["cursor"] = cursor
-        data = await self.request("GET", self._path("token_list"), params=params)
-        items = pick(data, "data", "items", "tokens", "result", "results", default=data)
-        if isinstance(items, dict):
-            items = pick(items, "items", "tokens", "list", default=[])
-        return items if isinstance(items, list) else []
+            raise ClientError("rh_data: RH_DATA_RPC_URL or RH_DATA_API_KEY is required")
+        self._id += 1
+        payload = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params}
+        data = await self.request("POST", "", json_body=payload)
+        if not isinstance(data, dict):
+            raise ClientError(f"rh_data {method}: unexpected response {type(data)}")
+        if data.get("error"):
+            raise ClientError(f"rh_data {method}: {data['error']}")
+        return data.get("result")
+
+    async def token_metadata(self, token_address: str) -> dict[str, Any] | None:
+        """Official ``alchemy_getTokenMetadata``."""
+        result = await self.rpc("alchemy_getTokenMetadata", [token_address])
+        return result if isinstance(result, dict) else None
 
     async def token_meta(self, address: str) -> dict[str, Any] | None:
-        if not self.enabled:
-            return None
-        data = await self.request(
-            "GET", self._path("token_meta", address=address), cache_key=f"meta:{address}"
-        )
-        return pick(data, "data", "token", "result", default=data)
+        """Compatibility alias used by diagnostics."""
+        return await self.token_metadata(address)
 
-    async def token_holders(self, address: str, limit: int = 100) -> dict[str, Any]:
-        """Returns {'holders': [{'address':..,'balance':..,'pct':..}], 'total': int|None}."""
-        if not self.enabled:
-            return {"holders": [], "total": None}
-        data = await self.request(
-            "GET", self._path("token_holders", address=address), params={"limit": limit}
-        )
-        container = pick(data, "data", "result", default=data)
-        raw = pick(container, "holders", "items", "list", default=container)
-        total = to_int(pick(container, "total", "holder_count", "holdersCount", "count"))
+    async def token_balances(
+        self, owner_address: str, token_addresses: list[str] | None = None
+    ) -> list[dict[str, Any]]:
+        """Official ``alchemy_getTokenBalances`` (wallet-centric, not holders)."""
+        selector: Any = token_addresses if token_addresses else "erc20"
+        result = await self.rpc("alchemy_getTokenBalances", [owner_address, selector])
+        if not isinstance(result, dict):
+            return []
+        rows = result.get("tokenBalances")
+        return rows if isinstance(rows, list) else []
 
-        holders: list[dict[str, Any]] = []
-        if isinstance(raw, list):
-            for h in raw:
-                if not isinstance(h, dict):
-                    continue
-                holders.append(
-                    {
-                        "address": pick(h, "address", "holder", "owner", "wallet"),
-                        "balance": to_float(pick(h, "balance", "amount", "value", "quantity")),
-                        "pct": to_float(pick(h, "percentage", "pct", "share", "percent")),
-                    }
-                )
-        return {"holders": holders, "total": total}
+    async def asset_transfers(
+        self,
+        *,
+        from_block: str = "0x0",
+        to_block: str = "latest",
+        contract_addresses: list[str] | None = None,
+        from_address: str | None = None,
+        to_address: str | None = None,
+        max_count: int = 1000,
+        page_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Official ``alchemy_getAssetTransfers`` for ERC-20 activity."""
+        params: dict[str, Any] = {
+            "fromBlock": from_block,
+            "toBlock": to_block,
+            "category": ["erc20"],
+            "withMetadata": True,
+            "excludeZeroValue": True,
+            "maxCount": hex(min(max(max_count, 1), 1000)),
+        }
+        if contract_addresses:
+            params["contractAddresses"] = contract_addresses
+        if from_address:
+            params["fromAddress"] = from_address
+        if to_address:
+            params["toAddress"] = to_address
+        if page_key:
+            params["pageKey"] = page_key
+        result = await self.rpc("alchemy_getAssetTransfers", [params])
+        return result if isinstance(result, dict) else {"transfers": []}
 
     async def token_transfers(self, address: str, limit: int = 200) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        data = await self.request(
-            "GET", self._path("token_transfers", address=address), params={"limit": limit}
-        )
-        container = pick(data, "data", "result", default=data)
-        items = pick(container, "transfers", "items", "list", default=container)
-        return items if isinstance(items, list) else []
+        result = await self.asset_transfers(contract_addresses=[address], max_count=limit)
+        rows = result.get("transfers")
+        return rows if isinstance(rows, list) else []
+
+    async def portfolio_tokens(self, addresses: list[str]) -> dict[str, Any]:
+        """Optional Alchemy Portfolio API ``POST /assets/tokens/by-address``."""
+        if not self.api_key:
+            raise ClientError("rh_data: RH_DATA_API_KEY is required for Portfolio API")
+        body = {
+            "addresses": [{"address": a, "networks": [self.network]} for a in addresses],
+            "withMetadata": True,
+            "withPrices": False,
+        }
+        url = f"{self.portfolio_base_url}/data/v1/{self.api_key}/assets/tokens/by-address"
+        data = await self.request("POST", url, json_body=body)
+        return data if isinstance(data, dict) else {}
+
+    async def list_tokens(self, limit: int = 100, cursor: str | None = None) -> list[dict[str, Any]]:
+        """No documented Alchemy global token-list endpoint exists."""
+        return []
+
+    async def token_holders(self, address: str, limit: int = 100) -> dict[str, Any]:
+        """Alchemy's documented Token API is wallet-centric, not a holder list."""
+        return {"holders": [], "total": None, "unsupported": True}
 
     async def probe(self) -> dict[str, Any]:
-        """Connectivity check used by scripts/probe_endpoints.py."""
         if not self.enabled:
             return {"enabled": False}
         try:
-            sample = await self.list_tokens(limit=1)
-            return {"enabled": True, "ok": True, "sample_keys": sorted(sample[0].keys()) if sample else []}
-        except ClientError as e:
-            return {"enabled": True, "ok": False, "error": str(e)}
+            chain_id = await self.rpc("eth_chainId", [])
+            return {"enabled": True, "ok": True, "chain_id_hex": chain_id}
+        except ClientError as exc:
+            return {"enabled": True, "ok": False, "error": str(exc)}

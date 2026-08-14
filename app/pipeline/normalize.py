@@ -13,6 +13,7 @@ Two invariants:
 from __future__ import annotations
 
 import datetime as dt
+import json
 import logging
 from typing import Any
 
@@ -34,6 +35,7 @@ TRACKED_FIELDS = [
     "price_usd", "liquidity_usd", "volume_24h", "volume_1h", "unique_holders",
     "top1_holder_pct", "top10_holder_pct", "holder_growth_24h_pct", "tx_count_24h",
     "token_age_hours", "price_change_24h_pct", "slippage_bps", "total_supply",
+    "unique_trader_ratio", "top_trader_volume_pct", "filtered_trade_pct",
 ]
 
 
@@ -43,13 +45,22 @@ class RawBundle:
     def __init__(self, token: TokenRef) -> None:
         self.token = token
         self.okx_price_info: dict[str, Any] | None = None
+        self.okx_hot: dict[str, Any] | None = None
         self.dexscreener: dict[str, Any] | None = None
         self.geckoterminal: dict[str, Any] | None = None
         self.okx_basic_info: dict[str, Any] | None = None
+        self.okx_advanced_info: dict[str, Any] | None = None
+        self.okx_holders: list[dict[str, Any]] = []
+        self.okx_trades: list[dict[str, Any]] = []
+        self.okx_liquidity: list[dict[str, Any]] = []
         self.okx_inst_id: str | None = None
         self.okx_available: bool | None = None
+        self.okx_identity_reason: str | None = None
         self.okx_book: tuple[float | None, float | None] = (None, None)
+        self.okx_book_slippage_bps: float | None = None
         self.rh_meta: dict[str, Any] | None = None
+        self.rh_transfers: list[dict[str, Any]] = []
+        self.latest_block: int | None = None
         self.rh_holders: dict[str, Any] | None = None
         self.explorer_holders: list[dict[str, Any]] | None = None
         self.explorer_counters: dict[str, Any] | None = None
@@ -83,6 +94,19 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
     # goes first because it is the only source reporting per-window volume and
     # buy/sell counts, and mixing windows from different providers would make
     # the spike and turnover gates compare unlike numbers.
+    from app.clients.base import to_float, to_int
+
+    hot: dict[str, Any] = bundle.okx_hot or {}
+    hot_price = to_float(hot.get("price")) if hot else None
+    hot_map: dict[str, float | int | None] = {
+        "liquidity_usd": to_float(hot.get("liquidity")),
+        "volume_24h": to_float(hot.get("volume")),
+        "tx_count_24h": to_int(hot.get("txs")),
+        "unique_holders": to_int(hot.get("holders")),
+        "market_cap_usd": to_float(hot.get("marketCap")),
+        "price_change_24h_pct": to_float(hot.get("change")),
+    } if hot else {}
+
     ds: dict[str, Any] = bundle.dexscreener or {}
     if ds:
         for field in (
@@ -108,6 +132,16 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
         ):
             snap.set_field(field, okx.get(field), "okx_market")
 
+    # The hot-token response is a discovery payload, not the preferred market
+    # snapshot. Apply it last as a Basic-tier fallback so it cannot splice its
+    # 24h values into DexScreener/price-info's shorter time windows.
+    for field, value in hot_map.items():
+        if field != "liquidity_usd":
+            snap.set_field(field, value, "okx_hot_token")
+    if hot:
+        snap.set_field("top10_holder_pct", to_float(hot.get("top10HoldPercent")), "okx_hot_token")
+        snap.set_field("bundled_buy_pct", to_float(hot.get("bundleHoldPercent")), "okx_hot_token")
+
     # -------------------------------------------------------- price consensus
     #
     # Three independent venues can contribute. Two are enough for the median and
@@ -116,12 +150,17 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
     price_sources: dict[str, float] = {}
     if okx.get("price_usd"):
         price_sources["okx_market"] = float(okx["price_usd"])
+    elif hot_price:
+        price_sources["okx_market"] = float(hot_price)
     if bundle.dex_pool_price:
         price_sources["dex_pool"] = float(bundle.dex_pool_price)
     if gt.get("price_usd"):
         price_sources["geckoterminal"] = float(gt["price_usd"])
     if bundle.chainlink_price:
         price_sources["chainlink"] = float(bundle.chainlink_price)
+    book_bid, book_ask = bundle.okx_book
+    if bundle.okx_available and book_bid and book_ask:
+        price_sources["okx_cex_book"] = (book_bid + book_ask) / 2.0
 
     rec = reconcile_prices(price_sources)
     snap.price_sources = price_sources
@@ -133,8 +172,9 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
 
     # ---------------------------------------------------------- liquidity mix
     liq_sources: dict[str, float] = {}
-    if okx.get("liquidity_usd"):
-        liq_sources["okx_market"] = float(okx["liquidity_usd"])
+    okx_liquidity = okx.get("liquidity_usd") or hot_map.get("liquidity_usd")
+    if okx_liquidity:
+        liq_sources["okx_market"] = float(okx_liquidity)
     if bundle.dex_pool_liquidity_usd:
         liq_sources["dex_pool"] = float(bundle.dex_pool_liquidity_usd)
     if gt.get("liquidity_usd"):
@@ -157,6 +197,27 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
         snap.token.decimals = bundle.onchain_decimals
 
     # ---------------------------------------------------------------- holders
+    # OKX's holdPercent is already percentage points (e.g. 76.75 means
+    # 76.75%), not a 0..1 ratio. Pool and burn addresses are excluded.
+    pool_addresses = {
+        str(row.get("poolAddress") or "").lower() for row in bundle.okx_liquidity
+        if row.get("poolAddress")
+    }
+    okx_holder_pcts = []
+    if bundle.okx_holders:
+        from app.clients.base import to_float
+
+        for holder in bundle.okx_holders:
+            address = str(holder.get("holderWalletAddress") or "").lower()
+            pct = to_float(holder.get("holdPercent"))
+            if pct is not None and address not in NON_HOLDER_ADDRESSES and address not in pool_addresses:
+                okx_holder_pcts.append(pct)
+        okx_holder_pcts.sort(reverse=True)
+        if okx_holder_pcts:
+            snap.set_field("top1_holder_pct", okx_holder_pcts[0], "okx_holder")
+            snap.set_field("top10_holder_pct", sum(okx_holder_pcts[:10]), "okx_holder")
+            snap.set_field("whale_concentration", sum(p for p in okx_holder_pcts if p >= 1.0), "okx_holder")
+
     balances = [b for b in bundle.holder_balances if b and b > 0]
     if balances:
         dist = metrics.holder_pcts(balances, snap.total_supply)
@@ -192,16 +253,23 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
     # ------------------------------------------------------------- flow split
     br = metrics.buy_ratio(bundle.buys_24h, bundle.sells_24h)
     snap.set_field("buy_ratio_24h", br, "derived")
+    trade_quality = derive_trade_quality(bundle.okx_trades)
+    for field in ("trade_sample_size", "unique_trader_ratio", "top_trader_volume_pct", "filtered_trade_pct"):
+        snap.set_field(field, trade_quality.get(field), "okx_trades")
+    if snap.buy_ratio_24h is None and trade_quality.get("sample_buy_ratio") is not None:
+        snap.set_field("buy_ratio_24h", trade_quality["sample_buy_ratio"], "okx_trades_sample")
 
     # --------------------------------------------------------- microstructure
     bid, ask = bundle.okx_book
     snap.set_field("spread_bps", metrics.spread_bps(bid, ask), "okx_trade")
-    if snap.liquidity_usd is not None:
+    snap.set_field("slippage_bps", bundle.okx_book_slippage_bps, "okx_trade_book_vwap")
+    if snap.slippage_bps is None and snap.liquidity_usd is not None:
         snap.set_field(
             "slippage_bps",
             metrics.estimate_slippage_bps(snap.liquidity_usd, c.position_usd),
             "derived(xyk)",
         )
+    if snap.slippage_bps is not None:
         snap.slippage_notional_usd = c.position_usd
 
     # -------------------------------------------------------------------- age
@@ -226,10 +294,13 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
     snap.contract_verified = bundle.contract_verified
     snap.is_proxy = bundle.contract_detail.get("is_proxy")
     snap.tokenomics_flags = derive_tokenomics_flags(snap, bundle)
+    apply_advanced_risk(snap, bundle.okx_advanced_info)
+    apply_tokenomics_override(snap, c)
 
     # ----------------------------------------------------------------- venue
     snap.okx_available = bundle.okx_available
     snap.okx_inst_id = bundle.okx_inst_id
+    snap.okx_identity_reason = bundle.okx_identity_reason
 
     # ------------------------------------------------------------- provenance
     for f in TRACKED_FIELDS:
@@ -237,7 +308,104 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
             snap.note_missing(f)
 
     snap.raw["contract_detail"] = bundle.contract_detail
+    snap.raw["okx_identity_reason"] = bundle.okx_identity_reason
+    snap.raw["trade_sample_size"] = len(bundle.okx_trades)
+    snap.raw["alchemy_transfer_sample_size"] = len(bundle.rh_transfers)
     return snap
+
+
+def derive_trade_quality(trades: list[dict[str, Any]]) -> dict[str, float | int | None]:
+    """Sample-based wash indicators from up to 500 official OKX trades."""
+    from app.clients.base import to_float
+
+    if not trades:
+        return {
+            "trade_sample_size": None, "unique_trader_ratio": None,
+            "top_trader_volume_pct": None, "filtered_trade_pct": None,
+            "sample_buy_ratio": None,
+        }
+    wallet_volume: dict[str, float] = {}
+    total_usd = 0.0
+    buys = sells = filtered = 0
+    for trade in trades:
+        wallet = str(trade.get("userAddress") or "").lower()
+        usd = to_float(trade.get("volume")) or 0.0
+        if wallet:
+            wallet_volume[wallet] = wallet_volume.get(wallet, 0.0) + usd
+        total_usd += usd
+        side = str(trade.get("type") or "").lower()
+        buys += side == "buy"
+        sells += side == "sell"
+        filtered += str(trade.get("isFiltered") or "0") == "1"
+    n = len(trades)
+    return {
+        "trade_sample_size": n,
+        "unique_trader_ratio": len(wallet_volume) / n if n else None,
+        "top_trader_volume_pct": (
+            max(wallet_volume.values(), default=0.0) / total_usd * 100.0 if total_usd > 0 else None
+        ),
+        "filtered_trade_pct": filtered / n * 100.0 if n else None,
+        "sample_buy_ratio": buys / (buys + sells) if buys + sells else None,
+    }
+
+
+def apply_advanced_risk(snap: NormalizedSnapshot, advanced: dict[str, Any] | None) -> None:
+    if not advanced:
+        return
+    from app.clients.base import to_float, to_int
+
+    snap.set_field("top10_holder_pct", to_float(advanced.get("top10HoldPercent")), "okx_advanced")
+    snap.set_field("sniper_wallet_pct", to_float(advanced.get("sniperHoldingPercent")), "okx_advanced")
+    snap.set_field("bundled_buy_pct", to_float(advanced.get("bundleHoldingPercent")), "okx_advanced")
+    snap.set_field("suspicious_holder_pct", to_float(advanced.get("suspiciousHoldingPercent")), "okx_advanced")
+    def add_contract_flag(flag: str) -> None:
+        # Idempotent: this may run more than once for a snapshot (retry, or a
+        # re-normalise during inspection), and "HONEYPOT, HONEYPOT" in an alert
+        # reads like two findings instead of one.
+        if flag not in snap.contract_flags:
+            snap.contract_flags.append(flag)
+
+    tags = {str(tag) for tag in (advanced.get("tokenTags") or [])}
+    if "honeypot" in tags:
+        add_contract_flag("HONEYPOT")
+    if to_int(advanced.get("devRugPullTokenCount")) not in (None, 0):
+        add_contract_flag("DEVELOPER_RUG_HISTORY")
+    if (to_int(advanced.get("riskControlLevel")) or 0) >= 4:
+        add_contract_flag("OKX_HIGH_RISK")
+    if "lowLiquidity" in tags and "CRITICAL_OKX_LOW_LIQUIDITY" not in snap.tokenomics_flags:
+        snap.tokenomics_flags.append("CRITICAL_OKX_LOW_LIQUIDITY")
+    snap.raw["okx_advanced"] = advanced
+
+
+def apply_tokenomics_override(snap: NormalizedSnapshot, c: Settings) -> None:
+    """Apply only operator-reviewed, source-backed unlock data."""
+    try:
+        overrides = json.loads(c.tokenomics_overrides_json or "{}")
+    except json.JSONDecodeError:
+        snap.tokenomics_flags.append("CRITICAL_TOKENOMICS_OVERRIDE_INVALID")
+        return
+    item = overrides.get(snap.token.address.lower()) if isinstance(overrides, dict) else None
+    if not isinstance(item, dict) or not item.get("source_url"):
+        return
+    from app.clients.base import to_float
+
+    unlock_pct = to_float(item.get("unlock_pct"))
+    if unlock_pct is None:
+        snap.tokenomics_flags.append("CRITICAL_UNLOCK_PERCENT_UNKNOWN")
+        return
+    snap.raw["next_unlock_pct"] = unlock_pct
+    if unlock_pct < c.major_unlock_pct_of_supply:
+        # The row describes a minor unlock, not the next major one. It cannot
+        # prove that no larger cliff occurs sooner, so leave the gate unresolved.
+        return
+    raw_at = item.get("next_unlock_at")
+    if raw_at:
+        try:
+            when = dt.datetime.fromisoformat(str(raw_at).replace("Z", "+00:00"))
+            snap.days_to_major_unlock = (when - snap.captured_at).total_seconds() / 86400.0
+            snap.sources["days_to_major_unlock"] = f"manual_review:{item['source_url']}"
+        except (TypeError, ValueError):
+            snap.tokenomics_flags.append("CRITICAL_UNLOCK_OVERRIDE_INVALID")
 
 
 def derive_tokenomics_flags(snap: NormalizedSnapshot, bundle: RawBundle) -> list[str]:

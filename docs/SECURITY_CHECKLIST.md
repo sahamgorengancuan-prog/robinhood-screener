@@ -39,7 +39,7 @@ curl -X POST localhost:8000/kill-switch/engage \
 - [ ] Engaged the kill switch and confirmed `/health` shows
       `live_trading_possible: false`
 - [ ] Confirmed a cycle still **screens and alerts** while killed (it should —
-      only execution stops)
+      both paper and live order creation stop)
 - [ ] The switch **fails closed**: if the check itself throws, it reports
       *engaged*
 
@@ -65,6 +65,10 @@ curl -X POST localhost:8000/kill-switch/engage \
       show no `ordType`)
 - [ ] No sell / withdraw / transfer method exists in any client
 - [ ] Every order is `post_only` and priced **below** the bid
+- [ ] LIVE identity requires chain label + OKX `ctAddr` suffix + exact live pair;
+      symbol-only matching is forbidden
+- [ ] Quote balance and fresh 50-level CEX VWAP slippage are checked before send
+- [ ] Kill switch and safe mode are re-checked immediately before the network call
 - [ ] Order intent is written to the DB **before** the network call, so a crash
       mid-flight is auditable
 - [ ] `clOrdId` is unique per order (DB unique constraint) — replay-safe
@@ -79,6 +83,8 @@ curl -X POST localhost:8000/kill-switch/engage \
 - [ ] Confirmed at least two independent price sources are live before enabling
       LIVE — a single source blocks live buying by design
 - [ ] Spot-checked several tokens by hand against the explorer
+- [ ] Reviewed `TOKENOMICS_OVERRIDES_JSON`; each row has a credible `source_url`
+- [ ] Chainlink feed addresses/heartbeats are current and L2 sequencer check is configured
 
 ## 7. Before flipping `RUN_MODE=LIVE`
 
@@ -87,6 +93,7 @@ curl -X POST localhost:8000/kill-switch/engage \
 - [ ] Reviewed every PAPER_BUY: would you have taken that trade manually?
 - [ ] Compared paper `realized_slippage_bps` against real fills on demo trading
 - [ ] Confirmed no token reached PAPER_BUY that you would call obviously bad
+- [ ] Confirmed unresolved OKX contract identity stays ALERT/on-chain-only
 - [ ] Checked the false-positive rate is tolerable; tightened thresholds if not
 - [ ] `OKX_SIMULATED=true` **still set** for the first live day
       (demo trading with `RUN_MODE=LIVE` exercises the full path safely)

@@ -275,7 +275,7 @@ async def do_run_cycle(progress=gr.Progress()):
            f"{summary['tokens']} token &nbsp;|&nbsp; {by_state}")
     kind = OK if summary["tokens"] else WARN
     if not summary["tokens"]:
-        msg += ("<br>Tidak ada kandidat. Aktifkan Data API untuk penemuan otomatis, "
+        msg += ("<br>Tidak ada kandidat. Aktifkan OKX hot-token / RPC mint-log discovery, "
                 "atau tambahkan kontrak manual di tab Token Inspector.")
     return banner(kind, msg), rows, cards
 
@@ -419,6 +419,10 @@ def lab_evaluate(
         volume_24h=volume_24h,
         tx_count_24h=int(tx_count),
         buy_ratio_24h=buy_ratio,
+        trade_sample_size=500,
+        unique_trader_ratio=0.40,
+        top_trader_volume_pct=5.0,
+        filtered_trade_pct=1.0,
         unique_holders=int(holders),
         top1_holder_pct=top1,
         top10_holder_pct=top10,
@@ -433,8 +437,10 @@ def lab_evaluate(
         drawdown_from_ath_pct=drawdown,
         contract_verified=verified_val,
         contract_flags=list(flags or []),
+        is_proxy=False,
         sniper_wallet_pct=3.0,
         bundled_buy_pct=4.0,
+        suspicious_holder_pct=1.0,
         days_to_major_unlock=90.0,
         okx_available=okx_val,
         okx_inst_id="LAB-USDT" if okx_val else None,
@@ -570,7 +576,7 @@ ENV_PATH = Path(__file__).resolve().parents[2] / ".env"
 SETUP_FIELDS = [
     "RH_NODE_RPC_URL", "RH_CHAIN_ID",
     "DEXSCREENER_CHAIN_SLUG", "GECKOTERMINAL_NETWORK",
-    "RH_DATA_ENABLED", "RH_DATA_BASE_URL",
+    "RH_DATA_ENABLED", "RH_DATA_RPC_URL",
     "OKX_API_KEY", "OKX_API_SECRET", "OKX_API_PASSPHRASE", "OKX_PROJECT_ID",
     "OKX_TRADE_API_KEY", "OKX_TRADE_API_SECRET", "OKX_TRADE_API_PASSPHRASE",
     "OKX_SIMULATED", "RUN_MODE", "POSITION_USD", "MAX_EXPOSURE_DAILY_USD",
@@ -600,7 +606,7 @@ def _setting_default(key: str):
         "MAX_EXPOSURE_DAILY_USD": c.max_exposure_daily_usd,
         "RH_NODE_RPC_URL": c.rh_node_rpc_url,
         "RH_CHAIN_ID": str(c.rh_chain_id) if c.rh_chain_id else "",
-        "RH_DATA_BASE_URL": c.rh_data_base_url,
+        "RH_DATA_RPC_URL": c.rh_data_rpc_url,
         "DEXSCREENER_CHAIN_SLUG": c.dexscreener_chain_slug,
         "GECKOTERMINAL_NETWORK": c.geckoterminal_network,
         "ALERT_WEBHOOK_URL": c.alert_webhook_url,
@@ -818,11 +824,10 @@ def build_ui() -> gr.Blocks:
                     with gr.Row():
                         f_data_on = gr.Dropdown(["false", "true"], value="false", scale=1,
                                                 label="Data API aktif?")
-                        f_data_url = gr.Textbox(label="Data API base URL (opsional)", scale=3)
+                        f_data_url = gr.Textbox(label="Alchemy Robinhood RPC URL (opsional)", scale=3)
                     gr.Markdown(
-                        "_Data API dimatikan secara default: kontrak respons-nya belum "
-                        "terverifikasi di repo ini. Aktifkan setelah Anda memeriksa nama field "
-                        "yang dikembalikan di tab Koneksi._"
+                        "_Data API memakai metode JSON-RPC Alchemy Token/Transfers. Ia menambah "
+                        "metadata dan activity, bukan global token listing atau top holders._"
                     )
 
                 with gr.Accordion("1b. Data pasar gratis — TANPA API KEY", open=True):
@@ -913,8 +918,7 @@ def build_ui() -> gr.Blocks:
                 gr.Markdown(
                     "Jalankan ini **sebelum** mempercayai angka apa pun. Selain status hidup/mati, "
                     "panel ini menampilkan **nama field yang benar-benar dikembalikan** tiap API — "
-                    "itulah yang Anda butuhkan untuk mencocokkan kontrak Data API dan OKX Web3 API "
-                    "yang belum terverifikasi di repo ini."
+                    "sehingga perubahan kontrak upstream terlihat sebelum memengaruhi keputusan."
                 )
                 with gr.Row():
                     probe_addr = gr.Textbox(

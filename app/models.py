@@ -93,6 +93,10 @@ class TokenSnapshot(Base):
     volume_24h: Mapped[float | None] = mapped_column(Float)
     tx_count_24h: Mapped[int | None] = mapped_column(Integer)
     buy_ratio_24h: Mapped[float | None] = mapped_column(Float)
+    trade_sample_size: Mapped[int | None] = mapped_column(Integer)
+    unique_trader_ratio: Mapped[float | None] = mapped_column(Float)
+    top_trader_volume_pct: Mapped[float | None] = mapped_column(Float)
+    filtered_trade_pct: Mapped[float | None] = mapped_column(Float)
 
     # ---- holders
     unique_holders: Mapped[int | None] = mapped_column(Integer)
@@ -118,6 +122,7 @@ class TokenSnapshot(Base):
     contract_flags: Mapped[list[Any] | None] = mapped_column(JSON)
     sniper_wallet_pct: Mapped[float | None] = mapped_column(Float)
     bundled_buy_pct: Mapped[float | None] = mapped_column(Float)
+    suspicious_holder_pct: Mapped[float | None] = mapped_column(Float)
     days_to_major_unlock: Mapped[float | None] = mapped_column(Float)
 
     # ---- provenance: which client produced which field, and what was missing

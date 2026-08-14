@@ -1,18 +1,9 @@
-"""OKX Market (Web3 / DEX) API client.
+"""Official OKX OnchainOS Market API v6 client.
 
-Used for four things:
-  1. Token Search       — does this contract exist on any OKX-indexed venue?
-  2. Token Basic Info   — metadata cross-check against on-chain values.
-  3. Token Price Info   — price, volume, supply, holders, liquidity.
-  4. Liquidity / price WS channel — real-time refresh before an order.
-
-Endpoint paths are configurable constants at the top of the file. The two that
-appeared in OKX's public docs index are marked VERIFIED-PATH; the others are
-marked UNVERIFIED and are read defensively. See docs/ENDPOINTS.md.
-
-Auth is OKX's standard scheme: HMAC-SHA256 over
-`timestamp + METHOD + requestPath + body`, base64 encoded, with the Web3 API
-additionally requiring `OK-ACCESS-PROJECT`.
+Basic endpoints are the cheapest core: supported chains, search, basic info,
+hot tokens, top liquidity and recent trades. Price info, advanced risk info and
+top holders are Premium endpoints, but OKX's Free plan currently includes a
+monthly Premium allowance; they can be disabled with one setting.
 """
 
 from __future__ import annotations
@@ -21,22 +12,24 @@ import base64
 import datetime as dt
 import hashlib
 import hmac
-import logging
 from typing import Any
 
 from app.clients.base import BaseHTTPClient, ClientError, pick, to_float, to_int
 
-log = logging.getLogger(__name__)
-
-# VERIFIED-PATH (present in OKX public API reference index)
+PATH_SUPPORTED_CHAINS = "/api/v6/dex/market/supported/chain"
 PATH_TOKEN_SEARCH = "/api/v6/dex/market/token/search"
-PATH_PRICE_INFO = "/api/v6/dex/market/price-info"
-# UNVERIFIED — confirm against your account's docs before relying on it.
 PATH_TOKEN_BASIC_INFO = "/api/v6/dex/market/token/basic-info"
+PATH_PRICE_INFO = "/api/v6/dex/market/price-info"
+PATH_HOT_TOKEN = "/api/v6/dex/market/token/hot-token"
+PATH_TOP_LIQUIDITY = "/api/v6/dex/market/token/top-liquidity"
+PATH_TRADES = "/api/v6/dex/market/trades"
+PATH_ADVANCED_INFO = "/api/v6/dex/market/token/advanced-info"
+PATH_HOLDERS = "/api/v6/dex/market/token/holder"
 
 
 def okx_timestamp() -> str:
-    return dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.") + f"{dt.datetime.now().microsecond // 1000:03d}Z"
+    now = dt.datetime.now(dt.timezone.utc)
+    return now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
 
 
 def okx_sign(secret: str, timestamp: str, method: str, request_path: str, body: str = "") -> str:
@@ -80,6 +73,8 @@ class OKXMarketClient(OKXAuthMixin, BaseHTTPClient):
         api_secret: str = "",
         passphrase: str = "",
         project_id: str = "",
+        *,
+        premium_enabled: bool = True,
         **kw: Any,
     ) -> None:
         super().__init__(base_url, **kw)
@@ -87,98 +82,146 @@ class OKXMarketClient(OKXAuthMixin, BaseHTTPClient):
         self.api_secret = api_secret
         self.passphrase = passphrase
         self.project_id = project_id
+        self.premium_enabled = premium_enabled
         self.enabled = bool(base_url)
 
     @staticmethod
     def _unwrap(data: Any) -> Any:
-        """OKX wraps payloads as {'code':'0','msg':'','data':[...]}."""
         if isinstance(data, dict) and "code" in data:
-            code = str(data.get("code"))
-            if code not in ("0", "00000"):
-                raise ClientError(f"okx_market error code={code} msg={data.get('msg')}")
+            if str(data.get("code")) not in ("0", "00000"):
+                raise ClientError(f"okx_market code={data.get('code')} msg={data.get('msg')}")
             return data.get("data")
         return data
 
-    # ------------------------------------------------------------------ search
-    async def token_search(self, query: str, chain_index: str | None = None) -> list[dict[str, Any]]:
-        """Search by symbol, name or contract address. Empty list = not listed."""
-        if not self.enabled:
-            return []
-        params: dict[str, Any] = {"keyword": query, "search": query}
+    async def supported_chains(self) -> list[dict[str, Any]]:
+        data = self._unwrap(await self.request("GET", PATH_SUPPORTED_CHAINS, cache_key="chains"))
+        return data if isinstance(data, list) else []
+
+    async def token_search(
+        self, query: str, chain_index: str | None = None, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        """Official params are ``chains`` and ``search`` (not keyword)."""
+        params: dict[str, Any] = {"search": query, "limit": str(min(max(limit, 1), 100))}
         if chain_index:
-            params["chainIndex"] = chain_index
-        try:
-            data = self._unwrap(
-                await self.request("GET", PATH_TOKEN_SEARCH, params=params, cache_key=f"search:{query}")
-            )
-        except ClientError as e:
-            log.warning("okx token_search failed for %s: %s", query, e)
-            raise
+            params["chains"] = chain_index
+        data = self._unwrap(
+            await self.request("GET", PATH_TOKEN_SEARCH, params=params, cache_key=f"search:{chain_index}:{query}")
+        )
         if isinstance(data, dict):
-            data = pick(data, "list", "tokens", "items", default=[])
+            data = pick(data, "tokens", "list", default=[])
         return data if isinstance(data, list) else []
 
     async def token_basic_info(self, chain_index: str, token_address: str) -> dict[str, Any] | None:
-        if not self.enabled:
-            return None
         body = [{"chainIndex": chain_index, "tokenContractAddress": token_address}]
-        try:
-            data = self._unwrap(await self.request("POST", PATH_TOKEN_BASIC_INFO, json_body=body))
-        except ClientError as e:
-            log.info("okx token_basic_info unavailable (%s)", e)
-            return None
-        if isinstance(data, list):
-            return data[0] if data else None
-        return data if isinstance(data, dict) else None
+        data = self._unwrap(await self.request("POST", PATH_TOKEN_BASIC_INFO, json_body=body))
+        return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None)
 
-    # -------------------------------------------------------------- price info
     async def price_info(self, chain_index: str, token_addresses: list[str]) -> dict[str, dict[str, Any]]:
-        """Batch price/volume/liquidity/holders lookup, keyed by lowercase address."""
-        if not self.enabled or not token_addresses:
+        if not self.premium_enabled or not token_addresses:
             return {}
         body = [
-            {"chainIndex": chain_index, "tokenContractAddress": a} for a in token_addresses[:100]
+            {"chainIndex": chain_index, "tokenContractAddress": address}
+            for address in token_addresses[:100]
         ]
         data = self._unwrap(await self.request("POST", PATH_PRICE_INFO, json_body=body))
+        return self._by_address(data)
+
+    async def hot_tokens(
+        self,
+        chain_index: str,
+        *,
+        time_frame: int = 4,
+        limit: int = 100,
+        filters: dict[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        params = {
+            "rankingType": "4",  # trending
+            "chainIndex": chain_index,
+            "rankingTimeFrame": str(time_frame),
+            "riskFilter": "true",
+            "limit": str(min(max(limit, 1), 100)),
+        }
+        for key, value in (filters or {}).items():
+            if value is not None:
+                params[key] = str(value).lower() if isinstance(value, bool) else str(value)
+        data = self._unwrap(await self.request("GET", PATH_HOT_TOKEN, params=params))
+        if isinstance(data, dict):
+            data = pick(data, "tokens", "list", default=[])
+        return data if isinstance(data, list) else []
+
+    async def top_liquidity(self, chain_index: str, token_address: str) -> list[dict[str, Any]]:
+        params = {"chainIndex": chain_index, "tokenContractAddress": token_address}
+        data = self._unwrap(await self.request("GET", PATH_TOP_LIQUIDITY, params=params))
+        if isinstance(data, dict):
+            data = pick(data, "liquidityList", "list", default=[])
+        return data if isinstance(data, list) else []
+
+    async def trades(self, chain_index: str, token_address: str, limit: int = 500) -> list[dict[str, Any]]:
+        params = {
+            "chainIndex": chain_index,
+            "tokenContractAddress": token_address,
+            "limit": str(min(max(limit, 1), 500)),
+        }
+        data = self._unwrap(await self.request("GET", PATH_TRADES, params=params))
+        if isinstance(data, dict):
+            data = pick(data, "trades", "list", default=[])
+        return data if isinstance(data, list) else []
+
+    async def advanced_info(self, chain_index: str, token_address: str) -> dict[str, Any] | None:
+        if not self.premium_enabled:
+            return None
+        params = {"chainIndex": chain_index, "tokenContractAddress": token_address}
+        data = self._unwrap(await self.request("GET", PATH_ADVANCED_INFO, params=params))
+        return data[0] if isinstance(data, list) and data else (data if isinstance(data, dict) else None)
+
+    async def holders(self, chain_index: str, token_address: str, limit: int = 100) -> list[dict[str, Any]]:
+        if not self.premium_enabled:
+            return []
+        params = {
+            "chainIndex": chain_index,
+            "tokenContractAddress": token_address,
+            "limit": str(min(max(limit, 1), 100)),
+        }
+        data = self._unwrap(await self.request("GET", PATH_HOLDERS, params=params))
+        if isinstance(data, dict):
+            data = pick(data, "holders", "list", default=[])
+        return data if isinstance(data, list) else []
+
+    @staticmethod
+    def _by_address(data: Any) -> dict[str, dict[str, Any]]:
         out: dict[str, dict[str, Any]] = {}
         if isinstance(data, list):
             for item in data:
                 if not isinstance(item, dict):
                     continue
-                addr = pick(item, "tokenContractAddress", "tokenAddress", "address", "contractAddress")
-                if addr:
-                    out[str(addr).lower()] = item
+                address = pick(item, "tokenContractAddress", "tokenAddress")
+                if address:
+                    out[str(address).lower()] = item
         return out
 
-    # ------------------------------------------------------------- extraction
     @staticmethod
     def extract_market(item: dict[str, Any]) -> dict[str, Any]:
-        """Map an OKX price-info item onto our normalized names.
-
-        Every value is `None` when absent — never coerced to 0.
-        """
+        """Exact documented keys first; safe legacy aliases second."""
         return {
-            "price_usd": to_float(pick(item, "price", "priceUsd", "lastPrice", "usdPrice")),
-            "liquidity_usd": to_float(pick(item, "liquidity", "liquidityUsd", "liquidityInUsd", "poolLiquidity")),
-            "volume_1h": to_float(pick(item, "volume1H", "volume1h", "vol1H", "volumeH1")),
-            "volume_24h": to_float(pick(item, "volume24H", "volume24h", "vol24H", "volumeH24")),
-            "volume_5m": to_float(pick(item, "volume5M", "volume5m", "vol5M", "volumeM5")),
-            "market_cap_usd": to_float(pick(item, "marketCap", "marketCapUsd", "mktCap")),
-            "fdv_usd": to_float(pick(item, "fdv", "fullyDilutedValuation", "fdvUsd")),
-            "total_supply": to_float(pick(item, "totalSupply", "supply", "maxSupply")),
-            "circulating_supply": to_float(pick(item, "circulatingSupply", "circulatingAmount")),
-            "unique_holders": to_int(pick(item, "holders", "holderCount", "holdersCount", "uniqueHolders")),
-            "price_change_1h_pct": to_float(pick(item, "priceChange1H", "change1H", "priceChangePercent1H")),
-            "price_change_24h_pct": to_float(pick(item, "priceChange24H", "change24H", "priceChangePercent24H")),
-            "tx_count_24h": to_int(pick(item, "txs24H", "txCount24H", "tradeCount24H", "txns24H")),
+            "price_usd": to_float(pick(item, "price", "priceUsd")),
+            "liquidity_usd": to_float(pick(item, "liquidity", "liquidityUsd")),
+            "volume_5m": to_float(pick(item, "volume5M", "volume5m")),
+            "volume_1h": to_float(pick(item, "volume1H", "volume1h")),
+            "volume_24h": to_float(pick(item, "volume24H", "volume24h")),
+            "market_cap_usd": to_float(pick(item, "marketCap", "marketCapUsd")),
+            "circulating_supply": to_float(pick(item, "circSupply", "circulatingSupply")),
+            "unique_holders": to_int(pick(item, "holders", "holderCount")),
+            "price_change_1h_pct": to_float(pick(item, "priceChange1H", "priceChange1h")),
+            "price_change_24h_pct": to_float(pick(item, "priceChange24H", "priceChange24h")),
+            "tx_count_24h": to_int(pick(item, "txs24H", "txCount24H")),
         }
 
     async def probe(self) -> dict[str, Any]:
         if not self.enabled:
             return {"enabled": False}
         try:
-            res = await self.token_search("USDC")
-            return {"enabled": True, "ok": True, "results": len(res),
-                    "sample_keys": sorted(res[0].keys()) if res else []}
-        except ClientError as e:
-            return {"enabled": True, "ok": False, "error": str(e)}
+            chains = await self.supported_chains()
+            robinhood = [c for c in chains if str(c.get("chainIndex")) == "4663"]
+            return {"enabled": True, "ok": bool(robinhood), "robinhood": robinhood[:1]}
+        except ClientError as exc:
+            return {"enabled": True, "ok": False, "error": str(exc)}

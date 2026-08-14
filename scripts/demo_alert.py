@@ -35,12 +35,15 @@ def snap(**kw) -> NormalizedSnapshot:
         total_supply=120_000_000.0, circulating_supply=90_000_000.0,
         volume_5m=9_000.0, volume_1h=95_000.0, volume_24h=2_200_000.0,
         tx_count_24h=4_100, buy_ratio_24h=0.51,
+        trade_sample_size=500, unique_trader_ratio=0.40,
+        top_trader_volume_pct=5.0, filtered_trade_pct=1.0,
         unique_holders=6_500, top1_holder_pct=4.0, top10_holder_pct=18.0,
         whale_concentration=0.015, holder_growth_24h_pct=12.0,
         spread_bps=20.0, slippage_bps=30.0, slippage_notional_usd=25.0,
         token_age_hours=24 * 12, price_change_1h_pct=0.8, price_change_24h_pct=4.0,
         price_vs_7d_base_pct=8.0, drawdown_from_ath_pct=22.0,
-        contract_verified=True, sniper_wallet_pct=3.0, bundled_buy_pct=4.0,
+        contract_verified=True, is_proxy=False,
+        sniper_wallet_pct=3.0, bundled_buy_pct=4.0, suspicious_holder_pct=1.0,
         days_to_major_unlock=90.0, okx_available=True, okx_inst_id="GOOD-USDT",
     )
     base.update(kw)
@@ -48,7 +51,7 @@ def snap(**kw) -> NormalizedSnapshot:
 
 
 CASES = {
-    "1. HEALTHY CANDIDATE (paper buy)": snap(),
+    "1. HEALTHY CANDIDATE (alert-only default)": snap(),
     "2. CONCENTRATED + WASH TRADED (reject)": snap(
         token=TokenRef(address="0x" + "cd" * 20, symbol="RUGY", name="Rug Token", decimals=18),
         top1_holder_pct=41.0, top10_holder_pct=88.0, volume_24h=30_000_000.0,
@@ -57,7 +60,7 @@ CASES = {
         price_change_24h_pct=340.0, token_age_hours=6.0, holder_growth_24h_pct=3_000.0,
         days_to_major_unlock=2.0, sniper_wallet_pct=52.0, bundled_buy_pct=61.0,
     ),
-    "3. THIN DATA (watch)": snap(
+    "3. CRITICAL DATA MISSING (reject)": snap(
         token=TokenRef(address="0x" + "ef" * 20, symbol="NEWT", name="New Token", decimals=18),
         unique_holders=None, top1_holder_pct=None, top10_holder_pct=None,
         whale_concentration=None, holder_growth_24h_pct=None, tx_count_24h=None,

@@ -15,7 +15,7 @@ Endpoint (public, documented, unauthenticated):
     GET https://api.dexscreener.com/latest/dex/tokens/{addresses}
 
 Rate limit is roughly 300 requests/minute for this endpoint. The screener's
-5-minute cadence is nowhere near that.
+Default 15-minute cadence is nowhere near that.
 
 MULTI-PAIR POLICY
 -----------------
@@ -55,10 +55,10 @@ class DexScreenerClient(BaseHTTPClient):
     def __init__(self, base_url: str = "https://api.dexscreener.com", chain_id: str = "", **kw: Any):
         super().__init__(base_url, headers={"Accept": "application/json"}, **kw)
         # DexScreener's own chain slug ("ethereum", "base", "arbitrum", ...).
-        # Left blank means "accept pairs from any chain", which is only safe when
-        # you know the address is unique — so the caller normally sets it.
+        # A blank slug disables the client. Accepting the same hex address from
+        # another EVM chain can silently price a different asset.
         self.chain_slug = (chain_id or "").strip().lower()
-        self.enabled = bool(base_url)
+        self.enabled = bool(base_url and self.chain_slug)
 
     async def token_pairs(self, address: str) -> list[dict[str, Any]]:
         """Raw pair list for one token address."""

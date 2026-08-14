@@ -38,20 +38,20 @@ class Settings(BaseSettings):
     # Standard Ethereum JSON-RPC. Works with any Orbit-compatible provider.
     rh_node_rpc_url: str = ""
     rh_node_ws_url: str = ""
-    rh_chain_id: int | None = None  # do not guess; probe reports the live value
+    # Official Robinhood Chain mainnet chain ID. The diagnostics command still
+    # verifies it against eth_chainId before a cycle is considered healthy.
+    rh_chain_id: int | None = 4663
     rh_node_timeout_s: float = 15.0
 
     # ---------------------------------------------- Robinhood Chain: data API
-    # Indexed data. Base URL + path templates are config so an endpoint change
-    # is a .env edit, not a code change. See docs/ENDPOINTS.md for the
-    # verified/unverified matrix.
+    # The official Robinhood docs recommend Alchemy for indexed Token and
+    # Transfers APIs. These are JSON-RPC methods on the same chain endpoint,
+    # not invented /tokens REST routes.
     rh_data_enabled: bool = False
-    rh_data_base_url: str = ""
+    rh_data_rpc_url: str = ""
     rh_data_api_key: str = ""
-    rh_data_path_token_list: str = "/tokens"
-    rh_data_path_token_meta: str = "/tokens/{address}"
-    rh_data_path_token_holders: str = "/tokens/{address}/holders"
-    rh_data_path_token_transfers: str = "/tokens/{address}/transfers"
+    alchemy_portfolio_base_url: str = "https://api.g.alchemy.com"
+    alchemy_network: str = "robinhood-mainnet"
 
     # ------------------------------------- free market data (no API key)
     # DexScreener is the only free source here that reports buy vs sell counts,
@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     okx_api_passphrase: str = ""
     okx_project_id: str = ""  # OK-ACCESS-PROJECT, web3/DEX endpoints only
     okx_market_timeout_s: float = 20.0
+    # Premium endpoints are still usable on OKX's free plan up to the monthly
+    # free allowance. Disable to keep the MVP strictly Basic-endpoint-only;
+    # doing so intentionally makes holder/sniper/bundle gates unresolved.
+    okx_market_premium_enabled: bool = True
+    okx_hot_token_enabled: bool = True
+    okx_hot_token_timeframe: int = 4  # 1=5m, 2=1h, 3=4h, 4=24h
 
     # ------------------------------------------------------------ OKX trading
     okx_cex_base_url: str = "https://www.okx.com"
@@ -93,19 +99,30 @@ class Settings(BaseSettings):
     okx_simulated: bool = True  # sends x-simulated-trading: 1
     okx_trade_timeout_s: float = 20.0
     okx_quote_ccy: str = "USDT"
+    # Exact label returned by GET /api/v5/asset/currencies varies by account.
+    # A live buy requires this case-insensitive hint AND ctAddr suffix match.
+    okx_robinhood_chain_hint: str = "Robinhood"
 
     # --------------------------------------------------------- oracle / price
     chainlink_enabled: bool = False
     # JSON map: {"ETH":"0xfeed...","USDC":"0xfeed..."}
     chainlink_feeds_json: str = "{}"
+    # JSON map, seconds: {"ETH":3600,"USDC":3600}. A missing heartbeat makes
+    # the feed ineligible for a trade-time sanity check.
+    chainlink_heartbeats_json: str = "{}"
+    chainlink_sequencer_feed: str = ""
+    chainlink_sequencer_grace_s: int = 3600
     # Max relative spread between independent price sources before we refuse to
     # trade (0.05 = 5%).
     price_max_source_divergence: float = 0.05
 
     # ------------------------------------------------------- ingestion tuning
-    ingest_interval_s: int = 300
-    score_interval_s: int = 300
-    max_tokens_per_cycle: int = 60
+    # 15m × 10 candidates keeps three Basic + three Premium OKX calls/token
+    # below the documented 100k/month free allowances, with small probe margin.
+    ingest_interval_s: int = 900
+    score_interval_s: int = 900
+    max_tokens_per_cycle: int = 10
+    discovery_lookback_blocks: int = 1200
     http_max_retries: int = 3
     http_backoff_base_s: float = 1.0
     http_rate_limit_rps: float = 5.0
@@ -148,10 +165,18 @@ class Settings(BaseSettings):
     # Sniper / bundling detection
     max_sniper_wallet_pct: float = 15.0
     max_bundled_buy_pct: float = 20.0
+    max_suspicious_holder_pct: float = 10.0
+    max_filtered_trade_pct: float = 10.0
+    max_top_trader_volume_pct: float = 25.0
+    min_unique_trader_ratio: float = 0.08
 
     # Unlock proximity
     min_days_to_major_unlock: float = 14.0
     major_unlock_pct_of_supply: float = 5.0
+    # Reviewed, source-backed overrides only. Example:
+    # {"0xabc...":{"next_unlock_at":"2026-09-01T00:00:00Z",
+    #  "unlock_pct":3.2,"source_url":"https://project.example/tokenomics"}}
+    tokenomics_overrides_json: str = "{}"
 
     # Stability: how many consecutive passing snapshots before a buy is allowed.
     stability_required_snapshots: int = 3
@@ -198,9 +223,8 @@ class Settings(BaseSettings):
     def _blank_int_is_none(cls, v):
         """`RH_CHAIN_ID=` (blank) means "not known yet", not a parse error.
 
-        The shipped .env.example leaves it empty on purpose — the chain ID is
-        meant to be read from the node with `eth_chainId` rather than guessed —
-        so an empty value has to be valid or the very first run crashes.
+        A UI-cleared value means "not known yet"; diagnostics will then read it
+        from the node with `eth_chainId`. The shipped example pins mainnet 4663.
         """
         if v is None or (isinstance(v, str) and not v.strip()):
             return None

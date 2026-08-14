@@ -41,6 +41,9 @@ class TokenRef(BaseModel):
     symbol: str | None = None
     name: str | None = None
     decimals: int | None = None
+    # Ephemeral discovery payload (for example OKX hot-token 24h metrics). It
+    # is normalized and audited, never persisted as trusted identity.
+    discovery_data: dict[str, Any] = Field(default_factory=dict)
 
     @property
     def key(self) -> str:
@@ -72,6 +75,10 @@ class NormalizedSnapshot(BaseModel):
     volume_24h: float | None = None
     tx_count_24h: int | None = None
     buy_ratio_24h: float | None = None
+    trade_sample_size: int | None = None
+    unique_trader_ratio: float | None = None
+    top_trader_volume_pct: float | None = None
+    filtered_trade_pct: float | None = None
 
     # holders
     unique_holders: int | None = None
@@ -99,11 +106,13 @@ class NormalizedSnapshot(BaseModel):
     is_proxy: bool | None = None
     sniper_wallet_pct: float | None = None
     bundled_buy_pct: float | None = None
+    suspicious_holder_pct: float | None = None
     days_to_major_unlock: float | None = None
 
     # venue
     okx_available: bool | None = None
     okx_inst_id: str | None = None
+    okx_identity_reason: str | None = None
 
     # provenance
     sources: dict[str, str] = Field(default_factory=dict)

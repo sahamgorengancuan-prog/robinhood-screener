@@ -43,11 +43,11 @@ def test_hard_failure_beats_a_perfect_score(now, settings):
     assert "HARD gate failure" in d.reason
 
 
-def test_missing_data_routes_to_watch_not_reject(now, settings):
+def test_missing_holder_data_is_explicit_reject(now, settings):
     snap = make_snapshot(now, unique_holders=None)
     d = run(snap, settings)
-    assert d.state == DecisionState.WATCH
-    assert d.insufficient_data
+    assert d.state == DecisionState.REJECT
+    assert d.hard_fail
 
 
 def test_hard_failure_takes_precedence_over_missing_data(now, settings):
@@ -58,10 +58,10 @@ def test_hard_failure_takes_precedence_over_missing_data(now, settings):
 
 
 # -------------------------------------------------------------- alert / paper
-def test_clean_token_in_alert_only_mode_stops_at_paper(now, settings, good_snapshot):
+def test_clean_token_in_alert_only_mode_stops_at_alert(now, settings, good_snapshot):
     d = run(good_snapshot, settings)
-    assert d.state == DecisionState.PAPER_BUY
-    assert "run_mode=ALERT_ONLY" in d.reason
+    assert d.state == DecisionState.ALERT
+    assert "alert-only" in d.reason
 
 
 def test_unstable_score_downgrades_to_alert(now, settings, good_snapshot):
@@ -97,41 +97,41 @@ def test_live_buy_requires_live_mode(now, good_snapshot, settings):
 def test_token_absent_from_okx_never_reaches_live(now, settings):
     snap = make_snapshot(now, okx_available=False, okx_inst_id=None, spread_bps=None)
     d = run(snap, live_settings(settings))
-    assert d.state == DecisionState.PAPER_BUY
+    assert d.state == DecisionState.ALERT
     assert "on-chain only" in d.reason
 
 
 def test_unresolved_okx_availability_never_reaches_live(now, settings):
     snap = make_snapshot(now, okx_available=None, okx_inst_id=None, spread_bps=None)
     d = run(snap, live_settings(settings))
-    assert d.state == DecisionState.PAPER_BUY
+    assert d.state == DecisionState.ALERT
     assert "unresolved" in d.reason
 
 
 def test_kill_switch_blocks_live_buy(now, good_snapshot, settings):
     d = run(good_snapshot, live_settings(settings), kill_switch=True)
-    assert d.state == DecisionState.PAPER_BUY
+    assert d.state == DecisionState.ALERT
     assert "kill switch" in d.reason
 
 
 def test_safe_mode_blocks_live_buy(now, good_snapshot, settings):
     d = run(good_snapshot, live_settings(settings), safe_mode=True,
             safe_mode_reason="BTC-USDT moved -7.2%")
-    assert d.state == DecisionState.PAPER_BUY
+    assert d.state == DecisionState.ALERT
     assert "safe mode" in d.reason
 
 
 def test_exposure_cap_blocks_live_buy(now, good_snapshot, settings):
     d = run(good_snapshot, live_settings(settings), exposure_ok=False,
             exposure_reason="daily cap reached")
-    assert d.state == DecisionState.PAPER_BUY
+    assert d.state == DecisionState.ALERT
     assert "exposure limit" in d.reason
 
 
-def test_live_only_gate_blocks_live_but_still_papers(now, settings):
+def test_live_only_gate_blocks_live_and_requires_review(now, settings):
     snap = make_snapshot(now, contract_flags=["UPGRADEABLE_PROXY"])
     d = run(snap, live_settings(settings))
-    assert d.state == DecisionState.PAPER_BUY
+    assert d.state == DecisionState.ALERT
     assert "mutable contract surface" in d.reason
 
 
@@ -139,7 +139,7 @@ def test_score_below_live_threshold_stops_at_paper(now, settings):
     c = live_settings(settings).model_copy(update={"score_live_buy_min": 99.5})
     d = run(make_snapshot(now), c)
     assert d.state == DecisionState.PAPER_BUY
-    assert "below live threshold" in d.reason
+    assert "simulated only" in d.reason
 
 
 # ---------------------------------------------------------------- thresholds

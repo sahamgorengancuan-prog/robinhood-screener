@@ -69,9 +69,26 @@ async def execute_live_buy(
     # 4 — credentials
     if not trade.credentialed:
         return None, v.block("OKX trading credentials not configured")
-
-    # 5 — instrument must really exist and be tradable
     try:
+        quote_balance = await trade.balance(c.okx_quote_ccy)
+    except ClientError as exc:
+        return None, v.block(f"could not verify {c.okx_quote_ccy} balance: {exc}")
+    if quote_balance is None or quote_balance < c.position_usd:
+        return None, v.block(
+            f"insufficient/unavailable {c.okx_quote_ccy} balance: {quote_balance}"
+        )
+
+    # 5 — re-resolve contract identity at execution time. Symbol alone is never
+    # sufficient because a same-symbol CEX asset may be a different contract.
+    try:
+        resolved, availability, identity_reason = await trade.resolve_contract_spot(
+            symbol=token.symbol or "",
+            contract_address=token.address,
+            chain_hint=c.okx_robinhood_chain_hint,
+            quote_ccy=c.okx_quote_ccy,
+        )
+        if availability is not True or resolved != inst_id:
+            return None, v.block(f"OKX contract identity failed: {identity_reason}")
         meta = await trade.instrument_meta(inst_id)
     except ClientError as e:
         return None, v.block(f"could not load instrument metadata: {e}")
@@ -84,11 +101,17 @@ async def execute_live_buy(
     # 6 — fresh book
     try:
         bid, ask = await trade.top_of_book(inst_id)
+        fresh_book_slippage = await trade.buy_slippage_bps(inst_id, c.position_usd)
     except ClientError as e:
         return None, v.block(f"could not fetch order book: {e}")
 
     # 7 — conditions still valid
-    cond = check_execution_conditions(liquidity_now, liquidity_at_decision, slippage_now, c)
+    cond = check_execution_conditions(
+        liquidity_now,
+        liquidity_at_decision,
+        fresh_book_slippage,
+        c,
+    )
     if not cond.allowed:
         return None, cond
 
@@ -106,6 +129,12 @@ async def execute_live_buy(
         return None, plan_v
 
     record = _record_from_plan(token, evaluation, plan, entry_reason, mode="LIVE")
+    killed, kill_reason = killswitch.is_killed()
+    if killed:
+        return None, plan_v.block(f"kill switch changed during pre-flight: {kill_reason}")
+    safe, safe_reason = killswitch.safe_mode_status()
+    if safe:
+        return None, plan_v.block(f"safe mode changed during pre-flight: {safe_reason}")
     session.add(record)
     session.flush()  # persist intent BEFORE the network call, so a crash mid-flight is auditable
 

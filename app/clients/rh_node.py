@@ -24,6 +24,7 @@ log = logging.getLogger(__name__)
 # --- standard constants (not guesses) ---------------------------------------
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 ZERO_ADDRESS = "0x0000000000000000000000000000000000000000"
+ZERO_ADDRESS_TOPIC = "0x" + "0" * 64
 # EIP-1967: bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1)
 EIP1967_IMPL_SLOT = "0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc"
 
@@ -227,6 +228,37 @@ class RobinhoodNodeClient(BaseHTTPClient):
             )
             if isinstance(res, list):
                 out.extend(res)
+            start = end + 1
+        return out
+
+    async def discover_minted_contracts(self, from_block: int, to_block: int) -> list[str]:
+        """Discover candidate contracts from recent ERC-20 mint Transfer logs.
+
+        The filter also sees ERC-721 mints; callers validate candidates with
+        ``totalSupply()``, ``decimals()``, and metadata reads before scoring.
+        This is bounded discovery, not a historical indexer.
+        """
+        out: list[str] = []
+        seen: set[str] = set()
+        start = max(0, from_block)
+        while start <= to_block:
+            end = min(start + LOG_CHUNK_BLOCKS - 1, to_block)
+            rows = await self.rpc(
+                "eth_getLogs",
+                [{
+                    "fromBlock": hex(start),
+                    "toBlock": hex(end),
+                    "topics": [TRANSFER_TOPIC, ZERO_ADDRESS_TOPIC],
+                }],
+            )
+            for row in rows if isinstance(rows, list) else []:
+                topics = row.get("topics") or []
+                address = str(row.get("address") or "").lower()
+                value = _hex_to_int(row.get("data"))
+                # ERC-20 Transfer has 3 topics and a non-zero amount in data.
+                if len(topics) == 3 and value and address.startswith("0x") and address not in seen:
+                    seen.add(address)
+                    out.append(address)
             start = end + 1
         return out
 

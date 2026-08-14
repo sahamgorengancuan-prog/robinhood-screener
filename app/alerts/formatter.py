@@ -69,6 +69,12 @@ def build_body(snap: NormalizedSnapshot, decision: Decision) -> str:
     lines.append(f"  volume 5m/1h/24h : {_fmt_usd(snap.volume_5m)} / {_fmt_usd(snap.volume_1h)} / {_fmt_usd(snap.volume_24h)}")
     lines.append(f"  tx count 24h     : {snap.tx_count_24h if snap.tx_count_24h is not None else 'n/a'}")
     lines.append(f"  buy share 24h    : {_fmt_pct(snap.buy_ratio_24h * 100 if snap.buy_ratio_24h is not None else None)}")
+    lines.append(
+        f"  wash sample      : {snap.trade_sample_size or 'n/a'} trades · "
+        f"unique ratio {snap.unique_trader_ratio if snap.unique_trader_ratio is not None else 'n/a'} · "
+        f"top wallet {_fmt_pct(snap.top_trader_volume_pct)} · "
+        f"filtered {_fmt_pct(snap.filtered_trade_pct)}"
+    )
     lines.append(f"  holders          : {snap.unique_holders if snap.unique_holders is not None else 'n/a'}"
                  f"  (growth {_fmt_pct(snap.holder_growth_24h_pct)}/24h)")
     lines.append(f"  top1 / top10     : {_fmt_pct(snap.top1_holder_pct)} / {_fmt_pct(snap.top10_holder_pct)}")
@@ -87,6 +93,7 @@ def build_body(snap: NormalizedSnapshot, decision: Decision) -> str:
     lines.append(f"  contract flags   : {', '.join(snap.contract_flags) or 'none detected'}")
     lines.append(f"  tokenomics flags : {', '.join(snap.tokenomics_flags) or 'none detected'}")
     lines.append(f"  sniper / bundled : {_fmt_pct(snap.sniper_wallet_pct)} / {_fmt_pct(snap.bundled_buy_pct)}")
+    lines.append(f"  suspicious share : {_fmt_pct(snap.suspicious_holder_pct)}")
     lines.append(f"  next unlock      : {f'{snap.days_to_major_unlock:.0f} days' if snap.days_to_major_unlock is not None else 'unknown'}")
     lines.append("")
 
@@ -99,7 +106,7 @@ def build_body(snap: NormalizedSnapshot, decision: Decision) -> str:
         lines.extend(f"  x {g.name}: {g.reason}" for g in hard)
         lines.append("")
     if live_only:
-        lines.append("LIVE-TRADE BLOCKERS (alert/paper still allowed)")
+        lines.append("LIVE-TRADE BLOCKERS (manual review required)")
         lines.extend(f"  ! {g.name}: {g.reason}" for g in live_only)
         lines.append("")
     if data:
@@ -124,6 +131,8 @@ def build_body(snap: NormalizedSnapshot, decision: Decision) -> str:
         lines.append("  OKX: NOT LISTED — on-chain only / manual review (no auto-buy)")
     else:
         lines.append("  OKX: availability unresolved")
+    if snap.okx_identity_reason:
+        lines.append(f"  Identity: {snap.okx_identity_reason}")
     lines.append("")
 
     lines.append(f"DECISION : {decision.state.value}")
@@ -155,6 +164,10 @@ def build_payload(snap: NormalizedSnapshot, decision: Decision) -> dict[str, Any
             "volume_24h": snap.volume_24h,
             "tx_count_24h": snap.tx_count_24h,
             "buy_ratio_24h": snap.buy_ratio_24h,
+            "trade_sample_size": snap.trade_sample_size,
+            "unique_trader_ratio": snap.unique_trader_ratio,
+            "top_trader_volume_pct": snap.top_trader_volume_pct,
+            "filtered_trade_pct": snap.filtered_trade_pct,
             "unique_holders": snap.unique_holders,
             "top1_holder_pct": snap.top1_holder_pct,
             "top10_holder_pct": snap.top10_holder_pct,
@@ -170,8 +183,15 @@ def build_payload(snap: NormalizedSnapshot, decision: Decision) -> dict[str, Any
             "contract_flags": snap.contract_flags,
             "tokenomics_flags": snap.tokenomics_flags,
             "days_to_major_unlock": snap.days_to_major_unlock,
+            "sniper_wallet_pct": snap.sniper_wallet_pct,
+            "bundled_buy_pct": snap.bundled_buy_pct,
+            "suspicious_holder_pct": snap.suspicious_holder_pct,
         },
-        "okx": {"available": snap.okx_available, "inst_id": snap.okx_inst_id},
+        "okx": {
+            "available": snap.okx_available,
+            "inst_id": snap.okx_inst_id,
+            "identity_reason": snap.okx_identity_reason,
+        },
         "gates": [g.as_dict() for g in decision.gates],
         "missing_fields": snap.missing_fields,
         "reason": decision.reason,

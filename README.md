@@ -13,9 +13,11 @@ Missing data is never treated as safe. A token that cannot be measured
 cannot be bought.
 ```
 
-**Status:** phases 0–3 built and tested (300 tests, green on Python 3.14.7 and 3.11). Three metrics have
-gates but no wired data source yet — they block live buying rather than being
-scored around. See [`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md) §B.
+**Status:** MVP entry pipeline built; 308 tests pass on Python 3.12 in this
+revision. OKX advanced/holder/trade risk data, contract-aware CEX identity, and
+manual source-backed unlock review are wired. The canonical operational design
+is [`docs/MVP_BLUEPRINT.md`](docs/MVP_BLUEPRINT.md); limitations are in
+[`docs/ASSUMPTIONS.md`](docs/ASSUMPTIONS.md).
 
 ---
 
@@ -98,12 +100,11 @@ than report up/down:
 
 Three things make it genuinely useful rather than decorative:
 
-1. **It shows the field names each API really returned.** For the OKX and
-   Robinhood Data APIs — whose contracts this repo could not verify offline —
+1. **It shows the field names each API really returned.** For OKX and Alchemy,
    the panel reports `observed_keys`, which of our fields **parsed**, and which
    are **unparsed**. That is exactly what you need to reconcile a parser against
-   a live API. Unparsed fields stay `None` and route tokens to WATCH; they never
-   become `0`.
+   a live API. Unparsed fields stay `None`; mandatory risk fields hard-reject,
+   while other missing fields route to WATCH. They never become `0`.
 2. **It fails fast.** Diagnostics run with retries disabled and shortened
    timeouts, so a dead endpoint reports in ~400ms instead of ~9s. The screening
    loop still retries with backoff — different job, different tuning.
@@ -123,7 +124,7 @@ useful for trying a key before committing it on the Setup tab.
 
 The most useful tab for learning the system. Move any slider — token metrics on
 the left, risk thresholds on the right — and the verdict, the 0–100 score
-breakdown and all 21 gate results recompute **instantly**. The result panel is
+breakdown and all 23 gate results recompute **instantly**. The result panel is
 sticky at the top, so you always see the effect of the slider you are dragging.
 
 It is fully offline and pure: no network, no database, no persistence. Use it to
@@ -135,7 +136,7 @@ functions as production — it is not a separate model that can drift.
 ### 🔬 Token Inspector
 
 Paste a contract address and it runs the full pipeline for that one token:
-collect → normalize → 21 gates → score → decision, plus the rendered alert and a
+collect → normalize → 23 gates → score → decision, plus the rendered alert and a
 provenance panel showing which source produced each field and what was missing.
 **Read-only** — it writes no rows and creates no orders.
 
@@ -240,26 +241,25 @@ decide *what is acceptable*.
 
 **3. On-chain standards are the floor, vendors are the enhancement.**
 
-`docs.robinhood.com` and `web3.okx.com` are blocked from this build environment,
-so the exact Data API and Web3 API contracts **could not be verified**. Two
-responses were possible: invent plausible field names, or build so that being
-wrong is safe. This repo does the second — see
-[`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
+Exact Robinhood, Alchemy and OKX endpoints were verified against their official
+documentation on 2026-08-14 and remain protected by runtime probes and
+fail-closed parsers. See [`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
 
 The Node API client depends only on published standards (JSON-RPC, the ERC-20
 ABI, the `Transfer` topic, the EIP-1967 slot). It cannot be wrong about a
 vendor's naming because it doesn't use one. Supply, contract privileges, proxy
-status, token age and holder distribution can all be rebuilt from it if every
-indexed source disappears.
+status and token age can be read or reconstructed from it. Global holder counts
+and reliable top-holder distribution still need an indexed holder source (OKX
+or Blockscout); they hard-reject when unavailable.
 
 ### Cost vs quality
 
 | Choice | Picked | Rejected | Why |
 |---|---|---|---|
-| Chain data | Node API + Data API + free Blockscout | Paid aggregators ($200–2000/mo) | Official + free covers every gate |
-| Node | Shared RPC | Self-hosted Orbit node (~$150–400/mo + ops) | Buys ~200ms this strategy can't use, adds stale-data risk |
+| Chain data | Node API + Alchemy + free Blockscout + OKX | Paid aggregators | Official/free allowance covers the MVP |
+| Node | Shared RPC | Self-hosted Nitro node (8+ CPU, 64–128GB RAM, several-TB NVMe) | Far beyond a 15-minute screener's needs |
 | Storage | SQLite + WAL | Postgres | One writer, tens of thousands of rows/day |
-| Queue | None | Redis / Celery | Nothing to queue at a 5-minute cadence |
+| Queue | None | Redis / Celery | Nothing to queue at a 15-minute cadence |
 | Scheduler | APScheduler in-process | Celery beat / k8s CronJob | No broker, no second process |
 | Contract safety | Bytecode scan + Blockscout verification | Paid audit API | Catches declared privileges for $0 |
 | Real-time | REST polling | WebSocket everywhere | Base-building doesn't need tick data |
@@ -307,7 +307,7 @@ is built to buy bases, not breakouts.
 └────────────────────────────────┬────────────────────────────────────┘
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────┐
-│ C. RISK GATES           app/pipeline/risk.py         21 gates       │
+│ C. RISK GATES           app/pipeline/risk.py         23 gates       │
 │    HARD → reject · LIVE_ONLY → no live buy · DATA → watch · SOFT    │
 └────────────────────────────────┬────────────────────────────────────┘
                                  ▼
@@ -345,16 +345,16 @@ robinhood-screener/
 │   ├── clients/
 │   │   ├── base.py             # retry + rate limit + TTL cache + pick()
 │   │   ├── rh_node.py          # JSON-RPC, ERC-20, bytecode scan, proxy detect
-│   │   ├── rh_data.py          # indexed data (config-driven paths)
+│   │   ├── rh_data.py          # Alchemy Token/Transfers/Portfolio APIs
 │   │   ├── explorer.py         # Blockscout: contract verification
-│   │   ├── okx_market.py       # token search / price info / basic info
+│   │   ├── okx_market.py       # discovery, market, holders, risk, trades
 │   │   ├── okx_trade.py        # v5 spot: instruments, book, order
 │   │   └── chainlink.py        # optional oracle cross-check
 │   ├── pipeline/
 │   │   ├── ingest.py           # orchestration
 │   │   ├── normalize.py        # raw → NormalizedSnapshot
 │   │   ├── metrics.py          # pure derived metrics
-│   │   ├── risk.py             # 21 gates, 4 severities
+│   │   ├── risk.py             # 23 gates, 4 severities
 │   │   ├── scoring.py          # 5 weighted components
 │   │   └── decision.py         # 5-state machine
 │   ├── execution/
@@ -370,9 +370,7 @@ robinhood-screener/
 │   │   ├── gradio_app.py       # 6-tab control panel
 │   │   └── theme.py            # styling, no external font/CDN requests
 │   └── util/reconcile.py       # multi-source price & liquidity policy
-├── setup.bat                   # Windows: first-time install
-├── run_pipeline.bat            # Windows: THE one-click
-├── start_ui.bat                # Windows: control panel
+├── START.bat                   # Windows: install + open control panel
 ├── EMERGENCY_STOP.bat          # Windows: halt execution (no Python needed)
 ├── scripts/
 │   ├── one_click.py            # all one-click logic (the .bat is a thin shell)
@@ -381,9 +379,10 @@ robinhood-screener/
 │   ├── probe_endpoints.py      # same checks, in the terminal
 │   ├── run_once.py
 │   └── demo_alert.py           # offline sample alerts
-├── tests/                      # 251 tests
+├── tests/                      # 308 tests
 └── docs/
-    ├── ENDPOINTS.md            # verified vs unverified matrix
+    ├── ENDPOINTS.md            # exact endpoint/tier matrix
+    ├── MVP_BLUEPRINT.md        # operational design and runbook
     ├── ASSUMPTIONS.md          # what the system does NOT know
     ├── SECURITY_CHECKLIST.md
     └── ROADMAP.md
@@ -436,14 +435,14 @@ Priority order, and what each is trusted for:
 
 | # | Source | Trusted for | Notes |
 |---|---|---|---|
-| 1 | **RH Node API** (JSON-RPC) | supply, decimals, contract privileges, proxy status, token age, holder reconstruction | Standards-only. Highest trust. |
-| 2 | **RH Data API** | token discovery, indexed holders, transfers | **Disabled by default** — contract unverified |
-| 3 | **Blockscout** | contract source verification, holder fallback | Free, no key. Verification is a hard gate. |
-| 4 | **OKX Market API** | price, liquidity, volume, holders, supply | `token/search`, `price-info` verified; `basic-info` unverified |
-| 5 | **OKX Trading API** | instrument existence, order book, execution | v5 spot. Buy-only surface. |
-| 6 | **Chainlink** | quote-asset price sanity | Optional, off by default |
+| 1 | **RH Node API** (JSON-RPC) | supply, contract scan, age, mint discovery | Standards-only; highest trust |
+| 2 | **Alchemy Data API** | metadata, wallet balances, transfers, portfolio | Indexed enhancement; no global listing/holders |
+| 3 | **Blockscout** | source verification, holder fallback | Free; cannot verify = hard reject |
+| 4 | **OKX OnchainOS** | hot-token discovery, price/liquidity/volume, holders, trades, sniper/bundle/risk | Basic + Premium free allowances |
+| 5 | **OKX CEX v5** | contract-aware identity, book, balance, execution | Exact identity + buy-only post-only surface |
+| 6 | **Chainlink** | oracle sanity check | Optional; heartbeat/sequencer checked |
 
-Details and the verified/unverified matrix: [`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
+Exact endpoints, tiers, and official references: [`docs/ENDPOINTS.md`](docs/ENDPOINTS.md).
 
 ### When sources disagree
 
@@ -468,7 +467,7 @@ def screening_cycle():
     if run_mode == LIVE:
         check_safe_mode(reference="BTC-USDT", max_1h_move=4%)
 
-    for token in discover_tokens():          # Data API feed, else tracked tokens
+    for token in discover_tokens():          # OKX hot + mint logs + watchlist
         history = load_history(token)        # prior snapshots: holders, prices
 
         # ---- A. COLLECT (parallel, each source fault-isolated) -------------
@@ -500,7 +499,7 @@ def screening_cycle():
 
         # ---- C. RISK GATES -------------------------------------------------
         gates = []
-        for gate in REGISTRY:                # 21 gates
+        for gate in REGISTRY:                # 23 gates
             try:
                 gates.append(gate(snap, config))
             except Exception:
@@ -511,9 +510,9 @@ def screening_cycle():
         #               spike, top1/top10, holder growth, snipers, bundling,
         #               unverified contract, mint+owner, blacklist, unlock cliff,
         #               too young, parabolic, price disagreement)
-        #   LIVE_ONLY → alert/paper allowed, live buy blocked (thin liquidity,
-        #               no CEX book, proxy/pausable, unknown verification,
-        #               unknown unlocks, single price source)
+        #   LIVE_ONLY → ALERT/manual review; never PAPER/LIVE (thin liquidity,
+        #               no CEX book, proxy/pausable, unresolved sniper/bundle,
+        #               single price source)
         #   DATA      → metric unavailable → WATCH
         #   SOFT      → score penalty only
 
@@ -533,9 +532,13 @@ def screening_cycle():
         elif score < PAPER_MIN:       state = ALERT
         elif not stable_for_N_snapshots_with_low_variance:
                                       state = ALERT
-        elif any(LIVE_ONLY failures) or not on_okx or kill_switch
-             or safe_mode or exposure_exceeded or run_mode != LIVE
-             or score < LIVE_MIN:     state = PAPER_BUY
+        elif any(LIVE_ONLY failures) or not exact_okx_identity:
+                                      state = ALERT
+        elif kill_switch or safe_mode or exposure_exceeded:
+                                      state = ALERT
+        elif run_mode == ALERT_ONLY:  state = ALERT
+        elif run_mode == PAPER or score < LIVE_MIN:
+                                      state = PAPER_BUY
         else:                         state = LIVE_BUY
 
         persist(evaluation)
@@ -621,9 +624,10 @@ most:
 RUN_MODE=ALERT_ONLY        # ALERT_ONLY | PAPER | LIVE   ← start here
 KILL_SWITCH_FILE=./KILL_SWITCH
 
-RH_NODE_RPC_URL=           # required — standard JSON-RPC
-RH_CHAIN_ID=               # leave blank; probe reads it via eth_chainId
-RH_DATA_ENABLED=false      # unverified contract — enable after probing
+RH_NODE_RPC_URL=https://rpc.mainnet.chain.robinhood.com
+RH_CHAIN_ID=4663           # official mainnet; probe still verifies it
+RH_DATA_ENABLED=false      # optional Alchemy Token/Transfers API
+RH_DATA_API_KEY=
 
 EXPLORER_BASE_URL=https://robinhoodchain.blockscout.com
 OKX_API_KEY=               # market data key
@@ -638,6 +642,8 @@ MAX_TOP1_HOLDER_PCT=12
 MAX_TOP10_HOLDER_PCT=40
 MIN_UNIQUE_HOLDERS=300
 MAX_VOLUME_TO_LIQUIDITY_RATIO=8.0     # wash-trade screen
+MAX_FILTERED_TRADE_PCT=10             # OKX recent-trade sample
+MAX_TOP_TRADER_VOLUME_PCT=25
 MAX_SINGLE_WINDOW_VOLUME_SHARE=0.35   # spike screen
 MAX_PRICE_CHANGE_24H_PCT=60           # anti-chase
 MIN_TOKEN_AGE_HOURS=24
@@ -660,7 +666,7 @@ MAX_EXPOSURE_DAILY_USD=200
 Generated offline by `make demo` — no keys, no network:
 
 ```
-[PAPER BUY] GOOD — score 85.4/100
+[ALERT] GOOD — score 85.4/100
 ==============================================================
 Token      : Good Token (GOOD)
 Contract   : 0xabababababababababababababababababababab
@@ -696,7 +702,7 @@ RISK FLAGS
   sniper / bundled : 3.0% / 4.0%
   next unlock      : 90 days
 
-PASSED GATES (21)
+PASSED GATES (23)
   + liquidity_min: liquidity $1,500,000
   + volume_organic: turnover 1.47x liquidity
   + volume_spike: recent window is 4% of 24h volume
@@ -704,14 +710,14 @@ PASSED GATES (21)
   + holder_growth: holder growth +12.0%/24h
   + contract_flags: no dangerous contract privileges detected
   + not_extended: 24h change +4.0%
-  ... (14 more)
+  ... (16 more)
 
 VENUE
   OKX: available as GOOD-USDT
 
-DECISION : PAPER_BUY
-REASON   : passes all risk gates; simulated only — run_mode=ALERT_ONLY
-ACTION   : Simulated only. Review manually before any real capital.
+DECISION : ALERT
+REASON   : score qualifies; all risk gates passed; alert-only mode
+ACTION   : Review manually. No order is created in ALERT_ONLY.
 ```
 
 A rejection shows the same detail with the failures first:
@@ -732,20 +738,20 @@ HARD FAILURES (disqualifying)
   x not_extended: price +340% in 24h — already extended, no chasing
 ```
 
-And a token that can't be measured is held, not guessed at:
+Critical data that cannot be measured is rejected, not guessed at:
 
 ```
-[WATCH] NEWT — score 65.0/100
+[REJECT] NEWT — score 65.0/100
 
-MISSING DATA
-  ? holders_min: unique_holders unavailable — cannot evaluate (unknown is never treated as safe)
-  ? top1_concentration: top1_holder_pct unavailable — cannot evaluate (...)
-  ? contract_flags: contract bytecode scan unavailable — cannot evaluate (...)
+HARD FAILURES
+  x holders_min: unique_holders unavailable — explicit fail-closed requirement
+  x top1_concentration: top1_holder_pct unavailable — explicit fail-closed requirement
+  x contract_verified: source verification unavailable — explicit fail-closed requirement
 
 VENUE
   OKX: NOT LISTED — on-chain only / manual review (no auto-buy)
 
-DECISION : WATCH
+DECISION : REJECT
 ```
 
 ---
@@ -926,7 +932,7 @@ score. The four things most likely to bite you:
 ## Tests
 
 ```bash
-make test    # 251 tests
+make test    # 308 tests
 ```
 
 | File | Covers |
@@ -939,6 +945,7 @@ make test    # 251 tests
 | `test_metrics_and_reconcile.py` | HHI catches dispersed whales; median resists a manipulated source; liquidity reconciliation is pessimistic |
 | `test_diagnostics.py` | Checks never raise; unreachable hosts report FAIL with a fix; skips explain their consequence; diagnostics don't retry |
 | `test_ui.py` | Threshold lab agrees with the engine; every red flag rejects; overrides don't leak into global settings; the UI cannot place an order |
+| `test_official_pipeline_e2e.py` | The official OKX OnchainOS path end to end: risk tags hard-reject, trade-sample wash detection, Premium-off degradation, and CEX contract-identity refusal |
 | `test_windows.py` | `.bat` files are CRLF with no unescaped `&`, valid `goto` targets and a `pause`; blank `RH_CHAIN_ID` parses; `.env.example` loads; ASCII console fallback works; emergency stop needs no Python |
 
 ---

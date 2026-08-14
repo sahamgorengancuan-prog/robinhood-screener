@@ -127,7 +127,7 @@ def test_paths_are_anchored_to_the_script_directory(bat: Path):
 
 # -------------------------------------------------------------- config guards
 def test_blank_chain_id_in_env_does_not_crash():
-    """`.env.example` ships RH_CHAIN_ID= blank; the first run must not explode."""
+    """An operator can still intentionally blank the chain id without a crash."""
     from app.config import Settings
 
     c = Settings(_env_file=None, rh_chain_id="")
@@ -149,7 +149,7 @@ def test_env_example_parses_as_settings(tmp_path):
     env.write_text((ROOT / ".env.example").read_text(), encoding="utf-8")
     c = Settings(_env_file=str(env))
     assert c.run_mode == "ALERT_ONLY"
-    assert c.rh_chain_id is None
+    assert c.rh_chain_id == 4663
     assert c.kill_switch is False
 
 

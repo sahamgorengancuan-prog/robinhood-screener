@@ -5,10 +5,13 @@ A gate is a pure function `(snapshot, settings) -> GateResult`. Four severities:
   HARD       — token is rejected outright, no score can rescue it.
   LIVE_ONLY  — may still ALERT or PAPER_BUY, but never LIVE_BUY.
   SOFT       — informational; the scoring layer applies the penalty.
-  DATA       — the metric is unavailable, so the token goes to WATCH.
+  DATA       — a non-critical metric is unavailable, so the token goes to WATCH.
 
-The DATA severity is the load-bearing idea. A screener that treats "unknown
-liquidity" the same as "adequate liquidity" will eventually buy a honeypot. Here
+The missing-data distinction is load-bearing. Explicitly required metrics such
+as liquidity, holder concentration, verification, contract scan, supply, and
+unlock coverage fail as HARD; other unavailable metrics fail as DATA. A
+screener that treats "unknown liquidity" the same as "adequate liquidity" will
+eventually buy a honeypot. Here
 an unknown value can never satisfy a gate.
 """
 
@@ -38,6 +41,15 @@ def _missing(name: str, field: str) -> GateResult:
     )
 
 
+def _critical_missing(name: str, field: str) -> GateResult:
+    return GateResult(
+        name=name,
+        passed=False,
+        severity=Severity.HARD,
+        reason=f"{field} unavailable — explicit fail-closed requirement",
+    )
+
+
 def _ok(name: str, reason: str, value=None, threshold=None) -> GateResult:
     return GateResult(name=name, passed=True, severity=Severity.SOFT, reason=reason,
                       value=value, threshold=threshold)
@@ -52,7 +64,7 @@ def _fail(name: str, sev: Severity, reason: str, value=None, threshold=None) -> 
 @gate
 def gate_liquidity(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if s.liquidity_usd is None:
-        return _missing("liquidity_min", "liquidity_usd")
+        return _critical_missing("liquidity_min", "liquidity_usd")
     if s.liquidity_usd < c.min_liquidity_usd:
         return _fail("liquidity_min", Severity.HARD,
                      f"liquidity ${s.liquidity_usd:,.0f} below floor ${c.min_liquidity_usd:,.0f}",
@@ -162,11 +174,33 @@ def gate_buy_sell_balance(s: NormalizedSnapshot, c: Settings) -> GateResult:
     return _ok("buy_sell_balance", f"buy share {s.buy_ratio_24h*100:.0f}%", round(s.buy_ratio_24h, 3))
 
 
+@gate
+def gate_wash_sample(s: NormalizedSnapshot, c: Settings) -> GateResult:
+    """Recent-trade sample screen; not a claim about the full 24h population."""
+    if not s.trade_sample_size or s.trade_sample_size < 30:
+        return _missing("wash_sample", "at least 30 recent OKX trades")
+    if s.filtered_trade_pct is None or s.unique_trader_ratio is None or s.top_trader_volume_pct is None:
+        return _missing("wash_sample", "trade quality fields")
+    if s.filtered_trade_pct > c.max_filtered_trade_pct:
+        return _fail("wash_sample", Severity.HARD,
+                     f"{s.filtered_trade_pct:.1f}% of sampled trades filtered by OKX",
+                     s.filtered_trade_pct, c.max_filtered_trade_pct)
+    if s.unique_trader_ratio < c.min_unique_trader_ratio:
+        return _fail("wash_sample", Severity.HARD,
+                     f"unique-trader/trade ratio {s.unique_trader_ratio:.3f} is too low",
+                     s.unique_trader_ratio, c.min_unique_trader_ratio)
+    if s.top_trader_volume_pct > c.max_top_trader_volume_pct:
+        return _fail("wash_sample", Severity.HARD,
+                     f"one wallet generated {s.top_trader_volume_pct:.1f}% of sampled USD volume",
+                     s.top_trader_volume_pct, c.max_top_trader_volume_pct)
+    return _ok("wash_sample", f"{s.trade_sample_size} trades; wallet mix is plausible")
+
+
 # ----------------------------------------------------------------------- holders
 @gate
 def gate_holder_count(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if s.unique_holders is None:
-        return _missing("holders_min", "unique_holders")
+        return _critical_missing("holders_min", "unique_holders")
     if s.unique_holders < c.min_unique_holders:
         return _fail("holders_min", Severity.HARD,
                      f"{s.unique_holders} holders below floor {c.min_unique_holders}",
@@ -177,7 +211,7 @@ def gate_holder_count(s: NormalizedSnapshot, c: Settings) -> GateResult:
 @gate
 def gate_top1(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if s.top1_holder_pct is None:
-        return _missing("top1_concentration", "top1_holder_pct")
+        return _critical_missing("top1_concentration", "top1_holder_pct")
     if s.top1_holder_pct > c.max_top1_holder_pct:
         return _fail("top1_concentration", Severity.HARD,
                      f"top holder controls {s.top1_holder_pct:.1f}% (max {c.max_top1_holder_pct}%)",
@@ -188,7 +222,7 @@ def gate_top1(s: NormalizedSnapshot, c: Settings) -> GateResult:
 @gate
 def gate_top10(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if s.top10_holder_pct is None:
-        return _missing("top10_concentration", "top10_holder_pct")
+        return _critical_missing("top10_concentration", "top10_holder_pct")
     if s.top10_holder_pct > c.max_top10_holder_pct:
         return _fail("top10_concentration", Severity.HARD,
                      f"top-10 control {s.top10_holder_pct:.1f}% (max {c.max_top10_holder_pct}%)",
@@ -234,12 +268,22 @@ def gate_bundling(s: NormalizedSnapshot, c: Settings) -> GateResult:
     return _ok("bundling", f"bundled buys {s.bundled_buy_pct:.1f}%", s.bundled_buy_pct)
 
 
+@gate
+def gate_suspicious_holders(s: NormalizedSnapshot, c: Settings) -> GateResult:
+    if s.suspicious_holder_pct is None:
+        return _fail("suspicious_holders", Severity.LIVE_ONLY, "suspicious-holder share unmeasured")
+    if s.suspicious_holder_pct > c.max_suspicious_holder_pct:
+        return _fail("suspicious_holders", Severity.HARD,
+                     f"suspicious wallets hold {s.suspicious_holder_pct:.1f}%",
+                     s.suspicious_holder_pct, c.max_suspicious_holder_pct)
+    return _ok("suspicious_holders", f"suspicious wallets {s.suspicious_holder_pct:.1f}%")
+
+
 # -------------------------------------------------------------------- contract
 @gate
 def gate_contract_verified(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if s.contract_verified is None:
-        return _fail("contract_verified", Severity.LIVE_ONLY,
-                     "contract source could not be verified — manual review before any live buy")
+        return _critical_missing("contract_verified", "contract source verification")
     if not s.contract_verified:
         return _fail("contract_verified", Severity.HARD, "contract source is not verified")
     return _ok("contract_verified", "contract source verified")
@@ -250,14 +294,17 @@ CRITICAL_CONTRACT_FLAGS = {
     "OWNER_CAN_MINT",
     "BLACKLIST",
     "SUSPICIOUSLY_SMALL_BYTECODE",
+    "HONEYPOT",
+    "DEVELOPER_RUG_HISTORY",
+    "OKX_HIGH_RISK",
 }
 LIVE_BLOCKING_CONTRACT_FLAGS = {"UPGRADEABLE_PROXY", "PAUSABLE", "MUTABLE_FEES", "MUTABLE_LIMITS"}
 
 
 @gate
 def gate_contract_flags(s: NormalizedSnapshot, c: Settings) -> GateResult:
-    if not s.contract_flags and s.contract_verified is None:
-        return _missing("contract_flags", "contract bytecode scan")
+    if not s.contract_flags and s.is_proxy is None:
+        return _critical_missing("contract_flags", "contract bytecode scan")
     critical = sorted(set(s.contract_flags) & CRITICAL_CONTRACT_FLAGS)
     if critical:
         return _fail("contract_flags", Severity.HARD,
@@ -272,7 +319,7 @@ def gate_contract_flags(s: NormalizedSnapshot, c: Settings) -> GateResult:
 @gate
 def gate_tokenomics(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if s.total_supply is None:
-        return _missing("tokenomics", "total_supply")
+        return _critical_missing("tokenomics", "total_supply")
     critical = [f for f in s.tokenomics_flags if f.startswith("CRITICAL_")]
     if critical:
         return _fail("tokenomics", Severity.HARD, f"tokenomics red flags: {', '.join(critical)}", critical)
@@ -291,8 +338,7 @@ def gate_unlock(s: NormalizedSnapshot, c: Settings) -> GateResult:
     fabricate a rejection reason.
     """
     if s.days_to_major_unlock is None:
-        return _fail("unlock_proximity", Severity.LIVE_ONLY,
-                     "no unlock schedule data — cannot rule out a near-term cliff")
+        return _critical_missing("unlock_proximity", "reviewed major-unlock schedule")
     if s.days_to_major_unlock < c.min_days_to_major_unlock:
         return _fail("unlock_proximity", Severity.HARD,
                      f"major unlock in {s.days_to_major_unlock:.1f} days "

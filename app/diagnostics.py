@@ -249,33 +249,21 @@ async def check_data_api(svc: Services, c: Settings) -> CheckResult:
     if not c.rh_data_enabled:
         return CheckResult(
             "Data API", "Robinhood Chain", SKIP, "RH_DATA_ENABLED=false (default)",
-            fix="Optional. Its response contract is unverified in this repo — enable only "
-                "after checking the returned keys below against app/clients/rh_data.py.",
+            fix="Optional Alchemy Token/Transfers API. OKX + Node still provide discovery.",
         )
     if not svc.data.enabled:
-        return CheckResult("Data API", "Robinhood Chain", FAIL, "enabled but RH_DATA_BASE_URL is empty",
-                           fix="Set RH_DATA_BASE_URL.")
+        return CheckResult("Data API", "Robinhood Chain", FAIL,
+                           "enabled but RH_DATA_RPC_URL/RH_DATA_API_KEY is empty",
+                           fix="Set RH_DATA_RPC_URL or RH_DATA_API_KEY.")
 
-    sample, ms, err = await _timed(lambda: svc.data.list_tokens(limit=1))
+    sample, ms, err = await _timed(svc.data.probe)
     if err:
         return CheckResult("Data API", "Robinhood Chain", FAIL, f"{err}", ms,
-                           fix="Check RH_DATA_BASE_URL, the API key, and RH_DATA_PATH_TOKEN_LIST.")
-    if not sample:
-        return CheckResult("Data API", "Robinhood Chain", WARN, "reachable but returned no tokens", ms,
-                           fix="The path may be wrong, or the feed may be empty. Compare with the docs.")
-
-    keys = _keys_of(sample)
-    addr_key = next((k for k in ("address", "contract_address", "contractAddress") if k in sample[0]), None)
-    if not addr_key:
-        return CheckResult(
-            "Data API", "Robinhood Chain", WARN,
-            f"returned {len(sample)} item(s) but no recognised address field", ms,
-            detail={"observed_keys": keys},
-            fix="Add the real address key to discover_tokens() in app/pipeline/ingest.py.",
-        )
-    return CheckResult("Data API", "Robinhood Chain", OK,
-                       f"reachable · address field '{addr_key}' · {len(keys)} fields", ms,
-                       detail={"observed_keys": keys, "sample": sample[0]})
+                           fix="Check the Alchemy Robinhood endpoint and API key.")
+    status = OK if sample and sample.get("ok") else FAIL
+    return CheckResult("Data API", "Robinhood Chain", status,
+                       f"Alchemy JSON-RPC chain id {sample.get('chain_id_hex') if sample else '?'}", ms,
+                       detail=sample)
 
 
 async def check_explorer(svc: Services, c: Settings, address: str | None) -> CheckResult:
@@ -294,8 +282,7 @@ async def check_explorer(svc: Services, c: Settings, address: str | None) -> Che
     if verified is None:
         return CheckResult(
             "Explorer", "Blockscout", WARN, "no verification record for this contract", ms,
-            fix="Treated as 'cannot verify' — blocks live buying but still alerts. "
-                "This is also the expected answer for an unverified contract.",
+            fix="Treated as an explicit hard reject, per fail-closed policy.",
         )
     return CheckResult("Explorer", "Blockscout", OK if verified else WARN,
                        f"contract verified: {verified}", ms, detail={"is_verified": verified})
@@ -413,7 +400,9 @@ async def check_okx_market(svc: Services, c: Settings) -> CheckResult:
     if not svc.market.enabled:
         return CheckResult("OKX Market", "OKX", SKIP, "OKX_MARKET_ENABLED=false")
 
-    res, ms, err = await _timed(lambda: svc.market.token_search("USDC"))
+    res, ms, err = await _timed(
+        lambda: svc.market.token_search("USDC", str(c.rh_chain_id or 4663))
+    )
     if err:
         msg = str(err)
         fix = "Check OKX_API_KEY / SECRET / PASSPHRASE / PROJECT_ID."

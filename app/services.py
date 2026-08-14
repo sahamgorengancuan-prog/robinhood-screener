@@ -47,14 +47,10 @@ def build_services(settings: Settings | None = None) -> Services:
 
     node = RobinhoodNodeClient(c.rh_node_rpc_url, timeout_s=c.rh_node_timeout_s, **common)
     data = RobinhoodDataClient(
-        c.rh_data_base_url if c.rh_data_enabled else "",
+        c.rh_data_rpc_url if c.rh_data_enabled else "",
         c.rh_data_api_key,
-        paths={
-            "token_list": c.rh_data_path_token_list,
-            "token_meta": c.rh_data_path_token_meta,
-            "token_holders": c.rh_data_path_token_holders,
-            "token_transfers": c.rh_data_path_token_transfers,
-        },
+        portfolio_base_url=c.alchemy_portfolio_base_url,
+        network=c.alchemy_network,
         **common,
     )
     explorer = ExplorerClient(
@@ -78,6 +74,7 @@ def build_services(settings: Settings | None = None) -> Services:
         c.okx_api_secret,
         c.okx_api_passphrase,
         c.okx_project_id,
+        premium_enabled=c.okx_market_premium_enabled,
         timeout_s=c.okx_market_timeout_s,
         **common,
     )
@@ -90,7 +87,13 @@ def build_services(settings: Settings | None = None) -> Services:
         timeout_s=c.okx_trade_timeout_s,
         **common,
     )
-    chainlink = ChainlinkClient(node, c.chainlink_feeds_json if c.chainlink_enabled else "{}")
+    chainlink = ChainlinkClient(
+        node,
+        c.chainlink_feeds_json if c.chainlink_enabled else "{}",
+        c.chainlink_heartbeats_json,
+        sequencer_feed=c.chainlink_sequencer_feed,
+        grace_period_s=c.chainlink_sequencer_grace_s,
+    )
 
     return Services(settings=c, node=node, data=data, explorer=explorer,
                     dexscreener=dexscreener, geckoterminal=geckoterminal,

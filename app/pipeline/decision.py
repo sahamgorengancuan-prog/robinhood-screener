@@ -7,13 +7,14 @@ Precedence, highest to lowest. The first matching rule wins:
   3. score < alert threshold               -> REJECT
   4. score < paper threshold               -> ALERT
   5. not stable across N snapshots         -> ALERT
-  6. LIVE_ONLY gate failed / not on OKX /
-     kill switch / safe mode / run_mode    -> PAPER_BUY
-  7. everything clean                      -> LIVE_BUY
+  6. LIVE_ONLY gate failed / not on OKX    -> ALERT
+  7. kill switch / safe mode               -> ALERT
+  8. PAPER mode / live score not met       -> PAPER_BUY
+  9. everything clean                      -> LIVE_BUY
 
 Note rule 6: a token that is perfect on-chain but absent from OKX stops at
-PAPER_BUY and is labelled "on-chain only / manual review". It is never forced
-into a trade.
+ALERT and is labelled "on-chain only / manual review". It is never forced into
+a trade.
 """
 
 from __future__ import annotations
@@ -90,7 +91,8 @@ def decide(
         return Decision(state=DecisionState.ALERT, score=score, gates=gates,
                         reason=f"score {score.total:.1f} qualifies but {stability_reason}")
 
-    # 6 — everything that blocks live execution but not simulation.
+    # 6 — PAPER_BUY means every risk gate passed. Unknown sniper/unlock/spread
+    # therefore stays ALERT; it is not relabelled as a successful simulation.
     blockers: list[str] = []
     if buckets["live_only"]:
         blockers.extend(g.reason for g in buckets["live_only"])
@@ -100,22 +102,30 @@ def decide(
         blockers.append("OKX availability unresolved")
     if not snapshot.okx_inst_id and ctx.okx_available:
         blockers.append("no OKX spot instrument resolved for this token")
-    if score.total < c.score_live_buy_min:
-        blockers.append(f"score {score.total:.1f} below live threshold {c.score_live_buy_min}")
-    if ctx.kill_switch:
-        blockers.append("kill switch engaged")
-    if ctx.safe_mode:
-        blockers.append(f"safe mode active: {ctx.safe_mode_reason}")
-    if not ctx.exposure_ok:
-        blockers.append(f"exposure limit: {ctx.exposure_reason}")
-    if ctx.run_mode != "LIVE":
-        blockers.append(f"run_mode={ctx.run_mode} (live trading not enabled)")
-
     if blockers:
-        return Decision(state=DecisionState.PAPER_BUY, score=score, gates=gates,
-                        reason="passes all risk gates; simulated only — " + "; ".join(blockers))
+        return Decision(state=DecisionState.ALERT, score=score, gates=gates,
+                        reason="risk/venue review required — " + "; ".join(blockers))
 
-    # 7 — clean.
+    # 7 — global controls block all order creation, including paper records.
+    if ctx.kill_switch:
+        return Decision(state=DecisionState.ALERT, score=score, gates=gates,
+                        reason="qualified, but kill switch is engaged")
+    if ctx.safe_mode:
+        return Decision(state=DecisionState.ALERT, score=score, gates=gates,
+                        reason=f"qualified, but safe mode is active: {ctx.safe_mode_reason}")
+    if not ctx.exposure_ok:
+        return Decision(state=DecisionState.ALERT, score=score, gates=gates,
+                        reason=f"qualified, but exposure limit blocks an order: {ctx.exposure_reason}")
+
+    if ctx.run_mode == "ALERT_ONLY":
+        return Decision(state=DecisionState.ALERT, score=score, gates=gates,
+                        reason=f"score {score.total:.1f}; all risk gates passed; alert-only mode")
+
+    if ctx.run_mode == "PAPER" or score.total < c.score_live_buy_min:
+        return Decision(state=DecisionState.PAPER_BUY, score=score, gates=gates,
+                        reason=f"score {score.total:.1f}; all risk gates passed; simulated only")
+
+    # 8 — clean.
     return Decision(state=DecisionState.LIVE_BUY, score=score, gates=gates,
                     reason=f"score {score.total:.1f}, all risk gates passed, {stability_reason}, "
                            f"OKX instrument {snapshot.okx_inst_id} available")
