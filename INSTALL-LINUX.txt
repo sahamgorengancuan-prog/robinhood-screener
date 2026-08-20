@@ -38,10 +38,11 @@
 
      Yang dilakukan installer:
        - mencari Python >= 3.11 di komputer Anda
-       - kalau tidak ada (Ubuntu 22.04 bawaannya Python 3.10, terlalu tua),
-         installer MENAWARKAN dua cara dan menanyakan izin dulu:
-             apt  -> pasang python3.12 lewat apt (perlu sudo)
-             uv   -> unduh CPython pribadi ke ~/.local (tanpa root)
+       - kalau tidak ada, installer MENAWARKAN tiga cara, dan selalu
+         menanyakan izin sebelum mengubah apa pun di luar folder ini:
+             uv          -> unduh CPython 3.12 pribadi ke ~/.local, tanpa root
+             deadsnakes  -> PPA pihak ketiga, build stabil, se-sistem
+             apt         -> paket dari arsip Ubuntu rilis ini, se-sistem
        - membuat virtualenv pribadi di ./.venv
        - memasang semua dependensi versi terkunci
        - membuat .env dengan default AMAN (ALERT_ONLY, tanpa kunci API)
@@ -49,6 +50,22 @@
        - MENJALANKAN SELURUH TEST SUITE supaya Anda tahu instalasi ini benar
 
      Instalasi pertama mengunduh beberapa ratus MB. Butuh 2-5 menit.
+
+     KHUSUS UBUNTU 22.04 -- BACA INI:
+     Ubuntu 22.04 bawaannya Python 3.10, terlalu tua untuk proyek ini.
+     Arsip 22.04 memang punya "python3.11", TAPI paketnya adalah
+     3.11.0~rc1 -- sebuah RELEASE CANDIDATE, tertinggal bertahun-tahun
+     perbaikan bug dan keamanan. Ini diverifikasi langsung terhadap arsip
+     jammy, bukan dugaan.
+
+     Karena itu di 22.04 installer MENDAHULUKAN jalur uv, yang memberi
+     CPython 3.12.11 rilis resmi tanpa perlu root. Kalau toh jatuh ke
+     jalur apt dan yang tersedia hanya rc, installer akan memberi tahu
+     Anda dua kali, bukan diam-diam memakainya.
+
+     Sudah punya Python stabil sendiri? Lewati semuanya:
+
+         bash install.sh --python /usr/bin/python3.12
 
   5) Jalankan panel kontrol:
 

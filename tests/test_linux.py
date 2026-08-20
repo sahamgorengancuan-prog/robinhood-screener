@@ -145,6 +145,48 @@ def test_installer_never_installs_into_the_system_python():
             assert "$VENV_PY" in code, f"pip escapes the venv: {line.strip()}"
 
 
+def test_installer_prefers_a_stable_python_on_jammy():
+    """Measured against the real jammy archive: Ubuntu 22.04 offers python3.11
+    only as 3.11.0~rc1, a release candidate frozen before years of bugfixes.
+    uv installs a proper release, so on 22.04 it must be tried first."""
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    marker = '= "ubuntu:22.04" ]; then'
+    assert marker in text, "the jammy special case was removed"
+    first_route = text.split(marker, 1)[1].splitlines()[1].strip()
+    assert first_route.startswith("provision_with_uv"), f"jammy leads with {first_route}"
+
+
+def test_installer_treats_prereleases_as_a_last_resort():
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "releaselevel" in text, "no prerelease detection"
+    # Stable pass first, prerelease pass only as a fallback.
+    assert "find_python no || find_python yes" in text
+    assert "PRE-RELEASE" in text, "a prerelease must be reported, not used quietly"
+
+
+def test_installer_probes_apt_before_installing():
+    """Blindly apt-installing python3.12 on 22.04 printed four `E: Unable to
+    locate package` lines before silently recovering. It looked broken."""
+    text = (ROOT / "install.sh").read_text(encoding="utf-8")
+    assert "apt_candidate()" in text
+    assert "apt-cache policy" in text
+
+
+def test_no_pipefail_sigpipe_traps_in_the_launchers():
+    """`cmd | grep -q` under `set -o pipefail` reports 141 when grep matches
+    early and cmd dies of SIGPIPE — so the test fails exactly when it should
+    have succeeded. This silently discarded the python3.11 that a real Ubuntu
+    22.04 host was offering."""
+    for name in BASH_SCRIPTS:
+        text = (ROOT / name).read_text(encoding="utf-8")
+        if "set -euo pipefail" not in text:
+            continue
+        for i, line in enumerate(text.splitlines(), 1):
+            code = line.split("#", 1)[0]
+            assert not ("|" in code and "grep -q" in code), \
+                f"{name}:{i} pipes into `grep -q` under pipefail: {line.strip()}"
+
+
 def test_installer_restores_the_executable_bit():
     """Browser downloads and Windows re-zips drop the mode bits."""
     assert "chmod +x ./*.sh" in (ROOT / "install.sh").read_text(encoding="utf-8")
@@ -169,7 +211,9 @@ def _shell_function(text: str, name: str) -> str:
     return "\n".join(lines[start + 1:end])
 
 
-@pytest.mark.parametrize("func", ["provision_with_apt", "provision_with_uv"])
+@pytest.mark.parametrize(
+    "func", ["provision_with_archive", "provision_with_deadsnakes", "provision_with_uv"]
+)
 def test_installer_asks_before_changing_the_system(func: str):
     """apt and the uv download are the only steps that touch anything outside
     the project folder, so both must be gated on an explicit answer."""

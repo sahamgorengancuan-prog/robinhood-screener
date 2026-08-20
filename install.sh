@@ -142,16 +142,29 @@ py_has_venv() {
     "$1" -c "import ensurepip, venv" >/dev/null 2>&1
 }
 
-py_label() { "$1" -c 'import sys; print("%d.%d.%d" % sys.version_info[:3])' 2>/dev/null || echo "?"; }
+py_label() { "$1" -c 'import sys; print(sys.version.split()[0])' 2>/dev/null || echo "?"; }
+
+py_is_prerelease() {
+    # Ubuntu 22.04's archive python3.11 is 3.11.0~rc1 — a release candidate that
+    # never received the following years of bugfixes. It runs this project, but
+    # it is not what anyone should be trading on, so it is chosen last.
+    "$1" -c "import sys; raise SystemExit(0 if sys.version_info.releaselevel != 'final' else 1)" \
+        >/dev/null 2>&1
+}
 
 PY=""
 MISSING_VENV_FOR=""
 
 find_python() {
-    local cand path
+    # Two passes: a stable interpreter always beats a prerelease one, even a
+    # newer prerelease.
+    local allow_prerelease="$1" cand path
     for cand in "${PY_CANDIDATES[@]}"; do
         path="$(command -v "$cand" 2>/dev/null)" || continue
         py_version_ok "$path" || continue
+        if [ "$allow_prerelease" != "yes" ] && py_is_prerelease "$path"; then
+            continue
+        fi
         if py_has_venv "$path"; then
             PY="$path"
             return 0
@@ -172,7 +185,7 @@ if [ -n "$FORCED_PYTHON" ]; then
     PY="$(command -v "$FORCED_PYTHON")"
     ok "using $PY ($(py_label "$PY")) as requested"
 else
-    find_python || true
+    find_python no || find_python yes || true
 fi
 
 # ---------------------------------------------------- 2a. repair a broken venv
@@ -190,21 +203,56 @@ if [ -z "$PY" ] && [ -n "$MISSING_VENV_FOR" ]; then
 fi
 
 # ------------------------------------------------------- 2b. provision python
-provision_with_apt() {
-    command -v sudo >/dev/null 2>&1 || return 1
-    say "      ${DIM}apt route: installs python$PROVISION_VERSION from the Ubuntu archive${R}"
-    confirm "Install python$PROVISION_VERSION system-wide with apt (needs sudo)?" || return 1
-    sudo apt-get update -qq || return 1
-    # The archive first. On 24.04 python3.12 is in main; on 22.04 python3.11 and
-    # python3.12 come from universe. Only if both are absent do we ask about a PPA.
-    local v
-    for v in "$PROVISION_VERSION" 3.11; do
-        if sudo apt-get install -y "python$v" "python$v-venv"; then
-            command -v "python$v" >/dev/null 2>&1 && { PY="$(command -v "python$v")"; return 0; }
-        fi
+apt_policy() { apt-cache policy "$1" 2>/dev/null; }
+
+apt_candidate() {
+    # Newest version this release can actually install. Checking first means the
+    # user never sees "E: Unable to locate package python3.12" from a probe we
+    # already knew would fail on 22.04.
+    #
+    # Deliberately no `| grep -q`: grep exits on the first match, apt-cache dies
+    # of SIGPIPE, and `set -o pipefail` then reports 141 for the pipeline. The
+    # test would fail precisely when the package *was* found — which is exactly
+    # how it behaved on a real 22.04 host before this was rewritten.
+    local v out
+    for v in 3.13 3.12 3.11; do
+        out="$(apt_policy "python$v")"
+        case "$out" in
+            *"Candidate: "[0-9]*) printf '%s' "$v"; return 0 ;;
+        esac
     done
-    warn "no suitable Python in this release's archive"
-    confirm "Add the deadsnakes PPA (third-party) and retry?" || return 1
+    return 1
+}
+
+provision_with_archive() {
+    command -v sudo >/dev/null 2>&1 || return 1
+    sudo apt-get update -qq >/dev/null 2>&1 || true
+
+    local v ver
+    v="$(apt_candidate)" || {
+        warn "this release's archive has no Python >= $MIN_PY_MAJOR.$MIN_PY_MINOR"
+        return 1
+    }
+    ver="$(apt_policy "python$v" | awk '/Candidate:/ {print $2}')"
+
+    say "      ${DIM}apt route: python$v ($ver) from the Ubuntu archive${R}"
+    case "$ver" in
+        *~rc*|*~a*|*~b*)
+            warn "that is a PRE-RELEASE build, years behind on bugfixes"
+            warn "prefer the uv route, which installs a proper stable release" ;;
+    esac
+
+    confirm "Install python$v system-wide with apt (needs sudo)?" || return 1
+    sudo apt-get install -y "python$v" "python$v-venv" || return 1
+    command -v "python$v" >/dev/null 2>&1 || return 1
+    PY="$(command -v "python$v")"
+    return 0
+}
+
+provision_with_deadsnakes() {
+    command -v sudo >/dev/null 2>&1 || return 1
+    say "      ${DIM}deadsnakes route: third-party PPA carrying stable CPython builds${R}"
+    confirm "Add the deadsnakes PPA and install python$PROVISION_VERSION?" || return 1
     sudo apt-get install -y software-properties-common || return 1
     sudo add-apt-repository -y ppa:deadsnakes/ppa || return 1
     sudo apt-get update -qq || return 1
@@ -223,9 +271,15 @@ provision_with_uv() {
         command -v curl >/dev/null 2>&1 || return 1
         say "      ${DIM}uv route: downloads a standalone CPython into your home directory${R}"
         confirm "Install uv from https://astral.sh/uv (no root needed)?" || return 1
-        curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1 || return 1
+        # The redirection has to cover curl too. Written as `curl ... | sh >/dev/null
+        # 2>&1` it only silences sh, so a blocked download printed a bare
+        # "curl: (22) ... error: 403" with no hint that another route was coming.
+        if ! { curl -LsSf https://astral.sh/uv/install.sh | sh; } >/dev/null 2>&1; then
+            warn "could not download uv (no network, proxy, or egress policy) — trying the next route"
+            return 1
+        fi
         UV="$HOME/.local/bin/uv"
-        [ -x "$UV" ] || return 1
+        [ -x "$UV" ] || { warn "uv installed but not at $UV — trying the next route"; return 1; }
     fi
     ok "uv found at $UV"
     "$UV" python install "$PROVISION_VERSION" || return 1
@@ -238,16 +292,29 @@ if [ -z "$PY" ]; then
     warn "no Python >= $MIN_PY_MAJOR.$MIN_PY_MINOR found"
     say ""
     say "      Ubuntu 22.04 ships Python 3.10 by default, which is below this"
-    say "      project's floor. One of two routes will fix that:"
+    say "      project's floor. Three routes can fix that:"
     say ""
-    say "        apt  — installs python$PROVISION_VERSION system-wide (needs sudo)"
-    say "        uv   — downloads a private CPython into ~/.local (no root)"
+    say "        uv          — private CPython $PROVISION_VERSION in ~/.local, no root"
+    say "        apt         — this release's archive build, system-wide"
+    say "        deadsnakes  — third-party PPA, stable builds, system-wide"
     say ""
-    if command -v sudo >/dev/null 2>&1; then
-        provision_with_apt || provision_with_uv || true
+    # Order is distro-aware, and the reason is measured rather than assumed:
+    # Ubuntu 22.04's archive ships python3.11 as 3.11.0~rc1, a release candidate
+    # frozen before years of bugfixes. uv installs a real release, so on jammy it
+    # goes first. On 24.04 the archive's python3.12 is a proper release and is
+    # the least surprising thing to install, so there apt leads.
+    if [ "$DISTRO_ID:$DISTRO_VER" = "ubuntu:22.04" ]; then
+        provision_with_uv || provision_with_deadsnakes || provision_with_archive || true
     else
-        provision_with_uv || provision_with_apt || true
+        provision_with_archive || provision_with_uv || provision_with_deadsnakes || true
     fi
+fi
+
+# A prerelease still beats no interpreter, but the operator must be told.
+if [ -n "$PY" ] && py_is_prerelease "$PY"; then
+    warn "$(py_label "$PY") is a PRE-RELEASE build of Python"
+    warn "it runs this project, but re-run with --python pointing at a stable"
+    warn "release before trusting it with real money"
 fi
 
 if [ -z "$PY" ]; then

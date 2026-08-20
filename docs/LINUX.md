@@ -70,28 +70,53 @@ looks fine.
 This project requires **Python ≥ 3.11** (`requires-python` in `pyproject.toml`;
 `tests/test_linux.py` asserts the installer's floor never drifts from it).
 
-| Release | Stock `python3` | Result |
-|---|---|---|
-| Ubuntu 24.04 | 3.12 | works immediately |
-| Ubuntu 22.04 | 3.10 | **too old** — needs provisioning |
+| Release | Stock `python3` | Archive alternative | Result |
+|---|---|---|---|
+| Ubuntu 24.04 | 3.12 | — | works immediately |
+| Ubuntu 22.04 | 3.10 | `python3.11` = **3.11.0~rc1** | needs provisioning |
 
-`install.sh` resolves this in a fixed order, and never installs anything
-system-wide without asking first:
+That second row is the important one, and it was measured against the live
+jammy archive rather than assumed. Ubuntu 22.04 does offer `python3.11`, but the
+package is **`3.11.0~rc1-1~22.04` — a release candidate**, frozen before years of
+subsequent bugfixes and security updates. The full test suite passes on it, so
+it is usable; it is not what anyone should run a trading-adjacent system on.
 
-1. **Search** for `python3.14`, `3.13`, `3.12`, `3.11`, then `python3` — taking
-   the first that is both new enough *and* able to create a virtualenv.
+So the order is distro-aware:
+
+**On Ubuntu 22.04** — `uv` → `deadsnakes` → `apt archive`
+**Everywhere else** — `apt archive` → `uv` → `deadsnakes`
+
+with these steps, and nothing outside the project folder changes without an
+explicit answer first:
+
+1. **Search** `python3.14`, `3.13`, `3.12`, `3.11`, then `python3`, in two
+   passes: a stable interpreter is taken over a prerelease one even if the
+   prerelease is newer. A candidate only counts if it can genuinely create a
+   virtualenv.
 2. **Repair.** If an interpreter is new enough but `ensurepip`/`venv` is missing
    — the standard Ubuntu split — it names the exact package (`python3.12-venv`)
    and offers to `apt install` it.
-3. **apt route.** Install `python3.12`, falling back to `python3.11`, from the
-   distribution's own archive. Only if neither exists does it ask about adding
-   the third-party deadsnakes PPA.
-4. **uv route.** Download a standalone CPython into `~/.local` via
+3. **uv route.** Downloads a standalone CPython 3.12 into `~/.local` via
    [uv](https://astral.sh/uv). No root, nothing outside your home directory.
-   This is the escape hatch when you have no sudo, or apt is locked down.
+   **This is the recommended route on 22.04**, because it yields a proper
+   release (3.12.11 at time of writing) instead of an rc.
+4. **deadsnakes route.** A third-party PPA carrying stable CPython builds for
+   older Ubuntu. Asked for explicitly, never added silently.
+5. **apt archive route.** Whatever this release genuinely offers, checked with
+   `apt-cache policy` *before* installing so you never see a wall of
+   `E: Unable to locate package`. If the candidate is a prerelease, the
+   installer says so twice — once before installing, once after — and tells you
+   to re-run with `--python` pointing at a stable build before trusting it with
+   real money.
 
-If all four fail it stops with the exact commands to run by hand. It never
+If everything fails it stops with the exact commands to run by hand. It never
 proceeds on an interpreter that cannot support the code.
+
+Already have a stable interpreter you trust? Skip the whole dance:
+
+```bash
+bash install.sh --python /usr/bin/python3.12
+```
 
 ### The venv trap
 
@@ -209,18 +234,31 @@ Removing the install is `rm -rf` on the folder.
 
 ---
 
-## What was verified, and what was not
+## What was verified
 
-Verified by execution on **Ubuntu 24.04.4 LTS**: the full install from an
-extracted zip, the venv build, dependency resolution, the test suite, the panel
-import, the port guard, the emergency stop, and — with `PATH` restricted to
-Python 3.10 to reproduce the Ubuntu 22.04 situation — the interpreter rejection
-and the uv provisioning route.
+**Ubuntu 22.04.5 LTS** — a real `ubuntu-base-22.04.5` root filesystem from
+cdimage.ubuntu.com, chrooted against the live jammy archives, brought to stock
+condition (Python 3.10.12, no `python3.11`, no `ensurepip`):
 
-Not executed: the apt/deadsnakes branch on a real 22.04 host, since no such
-machine or container runtime was available here. Its logic is tested for syntax
-and control flow, and it degrades to the uv route on any failure, but treat the
-first 22.04 apt run as unproven.
+* install from the extracted zip via the **uv route** → CPython **3.12.11**,
+  no root, suite green
+* install with uv and deadsnakes both unreachable → fell through to the **apt
+  archive route**, correctly identified `3.11.0~rc1` as a prerelease, warned,
+  installed, suite green — `370 passed, 1 skipped`
+* `./start.sh` → panel served **HTTP 200**
+* port guard refused a second launch on the same port
+* `./emergency-stop.sh` → `is_killed()` returned
+  `(True, 'kill switch file present at ./KILL_SWITCH')`
 
-The dependency set itself is version-pinned in `requirements.txt` and resolved
-from wheels on both 3.11 and 3.12; no compiler is needed on x86_64 or aarch64.
+**Ubuntu 24.04.4 LTS** — full install from the extracted zip, the
+single-command `./start.sh` bootstrap on a bare unzip, the panel serving HTTP
+200, the port guard in both directions, and the emergency stop.
+
+The dependency set is version-pinned in `requirements.txt` and resolved from
+wheels on 3.11, 3.12 and 3.13; no compiler is needed on x86_64 or aarch64.
+
+One thing is still unproven: `add-apt-repository ppa:deadsnakes/ppa` itself
+never completed here, because the sandbox blocks launchpad.net. The route is
+reached and exits cleanly on failure — that much was executed — but the PPA
+actually installing has not been observed. It is the third choice on 22.04
+behind two routes that were.
