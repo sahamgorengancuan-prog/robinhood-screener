@@ -38,13 +38,36 @@ The one exception is **`EMERGENCY_STOP.bat`**, kept as a separate file on
 purpose: it halts execution using no Python and no virtualenv, so it still works
 when everything else is broken.
 
+## Quick start (Linux — Ubuntu 22.04 / 24.04)
+
+Grab `dist/robinhood-screener-linux-<version>.zip` and run **two commands**:
+
+```bash
+unzip robinhood-screener-linux-0.1.0.zip && cd robinhood-screener
+bash install.sh          # finds or provisions Python, installs, verifies
+./start.sh               # http://127.0.0.1:7860
+```
+
+`install.sh` ends by running the full test suite, so a successful install is a
+verified one rather than a hopeful one. Ubuntu 22.04 ships Python 3.10, below
+this project's floor — the installer detects that and offers to provision 3.12
+via apt or via [uv](https://astral.sh/uv) (no root), asking before it changes
+anything outside the folder.
+
+`./emergency-stop.sh` halts execution using `/bin/sh` alone: no Python, no
+virtualenv, no network.
+
+Full runbook: [`docs/LINUX.md`](docs/LINUX.md). Indonesian quick-start:
+[`INSTALL-LINUX.txt`](INSTALL-LINUX.txt).
+
 <details>
-<summary>Linux / macOS</summary>
+<summary>Development targets (any Unix)</summary>
 
 ```bash
 make install && make init
 make ui            # http://127.0.0.1:7860
 make once          # one screening cycle, headless
+make package       # rebuild the Linux install zip
 ```
 </details>
 

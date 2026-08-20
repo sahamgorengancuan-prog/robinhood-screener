@@ -1,0 +1,108 @@
+===============================================================================
+  ROBINHOOD CHAIN TOKEN SCREENER — CARA PASANG DI UBUNTU 22.04 / 24.04
+===============================================================================
+
+  Butuh dua perintah. Tidak ada yang lain.
+
+  1. Pasang (sekali saja):
+
+         bash install.sh
+
+  2. Jalankan:
+
+         ./start.sh
+
+     Lalu buka  http://127.0.0.1:7860  di browser.
+
+
+-------------------------------------------------------------------------------
+  LANGKAH LENGKAP DARI NOL
+-------------------------------------------------------------------------------
+
+  1) Buka Terminal          (Ctrl + Alt + T)
+
+  2) Pasang alat dasar. Ubuntu polos belum tentu punya unzip:
+
+         sudo apt update
+         sudo apt install -y unzip curl
+
+  3) Ekstrak paket ini:
+
+         cd ~
+         unzip robinhood-screener-linux-0.1.0.zip
+         cd robinhood-screener
+
+  4) Jalankan installer:
+
+         bash install.sh
+
+     Yang dilakukan installer:
+       - mencari Python >= 3.11 di komputer Anda
+       - kalau tidak ada (Ubuntu 22.04 bawaannya Python 3.10, terlalu tua),
+         installer MENAWARKAN dua cara dan menanyakan izin dulu:
+             apt  -> pasang python3.12 lewat apt (perlu sudo)
+             uv   -> unduh CPython pribadi ke ~/.local (tanpa root)
+       - membuat virtualenv pribadi di ./.venv
+       - memasang semua dependensi versi terkunci
+       - membuat .env dengan default AMAN (ALERT_ONLY, tanpa kunci API)
+       - membangun database SQLite di ./data
+       - MENJALANKAN SELURUH TEST SUITE supaya Anda tahu instalasi ini benar
+
+     Instalasi pertama mengunduh beberapa ratus MB. Butuh 2-5 menit.
+
+  5) Jalankan panel kontrol:
+
+         ./start.sh
+
+  6) Buka http://127.0.0.1:7860, lalu:
+       - tab "Setup"              -> isi kunci API, klik Simpan
+       - tab "Koneksi & API Test" -> buktikan setiap sumber data hidup
+       - tab "Screener"           -> jalankan pipeline
+
+     Semua pengaturan ada di panel. Tidak ada file lain yang perlu disentuh.
+
+
+-------------------------------------------------------------------------------
+  TOMBOL DARURAT
+-------------------------------------------------------------------------------
+
+         ./emergency-stop.sh
+
+  Menghentikan SEMUA eksekusi order seketika. Skrip ini memakai /bin/sh saja:
+  tanpa Python, tanpa virtualenv, tanpa jaringan. Jadi tetap berfungsi
+  walaupun semua hal lain rusak — dan itu justru saat Anda membutuhkannya.
+
+  Screening dan alert tetap jalan. Hanya eksekusi yang berhenti.
+  Untuk melanjutkan lagi: buka panel -> tab "Risiko & Order",
+  atau hapus file KILL_SWITCH di folder ini.
+
+
+-------------------------------------------------------------------------------
+  CATATAN PENTING
+-------------------------------------------------------------------------------
+
+  * Mode bawaan adalah ALERT_ONLY. Instalasi baru TIDAK BISA membuat order,
+    walaupun kunci API sudah diisi. Itu disengaja.
+
+  * Kalau muncul "Permission denied" saat menjalankan ./start.sh, berarti
+    bit executable hilang saat unduh. Perbaiki dengan:
+
+         chmod +x *.sh
+
+  * Kalau muncul "bad interpreter: /bin/bash^M", file ini pernah melewati
+    Windows dan mendapat akhiran baris CRLF. Perbaiki dengan:
+
+         sudo apt install -y dos2unix && dos2unix *.sh
+
+  * Menjalankan di server tanpa desktop? JANGAN bind ke 0.0.0.0. Panel ini
+    tidak punya autentikasi dan bisa mengaktifkan kill switch. Pakai tunnel:
+
+         ssh -L 7860:127.0.0.1:7860 user@server
+
+  * Menghapus instalasi: cukup hapus foldernya. Tidak ada yang ditulis ke
+    luar folder ini, kecuali bila Anda memilih jalur apt atau uv pada
+    langkah 4.
+
+  Dokumentasi lengkap: docs/LINUX.md
+  API mana yang dibutuhkan dan cara daftarnya: docs/API_SETUP.md
+===============================================================================

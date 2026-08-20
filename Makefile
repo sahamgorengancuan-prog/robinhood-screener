@@ -1,4 +1,4 @@
-.PHONY: help install init probe ui run once demo test lint kill unkill clean
+.PHONY: help install init probe ui run once demo test lint kill unkill clean package
 
 help:
 	@echo "install  - install dependencies"
@@ -9,6 +9,7 @@ help:
 	@echo "run      - start the API + scheduler (http://localhost:8000)"
 	@echo "demo     - render sample alerts offline (no network, no keys)"
 	@echo "test     - run the test suite"
+	@echo "package  - rebuild dist/robinhood-screener-linux-<version>.zip"
 	@echo "kill     - engage the kill switch immediately"
 	@echo "unkill   - clear the kill-switch file"
 
@@ -37,6 +38,9 @@ demo:
 
 test:
 	python -m pytest -q
+
+package:
+	python scripts/make_linux_package.py
 
 kill:
 	@touch KILL_SWITCH && echo "KILL SWITCH ENGAGED — all execution stopped"
