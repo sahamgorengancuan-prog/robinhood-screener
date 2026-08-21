@@ -785,6 +785,39 @@ DECISION : REJECT
 
 ## 9. Runbook (local deployment)
 
+### Reading a cycle: was the token bad, or was the screener blind?
+
+Because the screener fails closed, a token with no measurable liquidity and a
+token whose liquidity API returned `403` produce the same verdict —
+`liquidity_usd unavailable — explicit fail-closed requirement`. That is correct
+behaviour and a terrible diagnostic, so every cycle ends with a source-health
+block in the log:
+
+```
+source health — 22 token(s) this cycle
+connections (is the endpoint answering)
+  explorer GET /api/v2/tokens/{address}/holders    0 ok   22 FAILED   403 Forbidden
+  okx_market POST /api/v6/dex/market/price-info    0 ok   22 FAILED   401 Invalid OK-ACCESS-KEY
+  rh_node POST /                                  22 ok
+  -> never answered once: explorer GET …/holders, okx_market POST …/price-info
+
+data coverage (did a value actually arrive)
+  dexscreener       11 ok   11 no-data
+  node.erc20        22 ok
+```
+
+Two tables because they answer two questions. **Connections** is the transport
+layer's own record, so it stays accurate even for clients that turn an error
+into `None` at their boundary. **Data coverage** separates *no data for this
+token* — a normal result for an untraded contract — from *the call failed*.
+
+Any endpoint that never answered is repeated in the Screener tab's cycle banner,
+so the warning reaches an operator who never opens a terminal. Repeated
+identical failures are logged once per cycle with a traceback, then counted;
+22 tokens hitting one dead endpoint cost one log entry, not 22.
+
+`LOG_LEVEL=DEBUG` adds a line per repeat if you need them.
+
 ### Install (Windows)
 
 Double-click **`setup.bat`**. It creates the virtualenv, installs everything,

@@ -30,6 +30,7 @@ from app.execution.portfolio import exposure_for
 from app.execution.order_safety import check_exposure
 from app.models import Evaluation, Token, TokenSnapshot, utcnow
 from app.pipeline.decision import DecisionContext, decide
+from app.pipeline.source_health import SourceReport, run_sources, use_report
 from app.pipeline.normalize import NON_HOLDER_ADDRESSES, RawBundle, normalize
 from app.pipeline.risk import evaluate_gates, summarize
 from app.pipeline.scoring import score_snapshot
@@ -116,7 +117,12 @@ async def discover_tokens(svc: Services) -> list[TokenRef]:
 # ===========================================================================
 # Collection
 # ===========================================================================
-async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawBundle:
+async def collect(
+    svc: Services,
+    ref: TokenRef,
+    history: dict[str, Any],
+    report: SourceReport | None = None,
+) -> RawBundle:
     """Gather everything about one token. Every source is individually guarded."""
     b = RawBundle(ref)
     addr = ref.address
@@ -139,21 +145,30 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
             info = await svc.market.price_info(chain_index, [addr])
             b.okx_price_info = info.get(addr.lower())
         except ClientError as e:
-            log.info("okx price_info failed for %s: %s", addr, e)
+            if report.failed("okx.price_info", e):
+                log.info("okx price_info failed for %s: %s", addr, e)
+        else:
+            report.record("okx.price_info", b.okx_price_info)
         try:
             b.okx_basic_info = await svc.market.token_basic_info(chain_index, addr)
-        except ClientError:
-            pass
+        except ClientError as e:
+            report.failed("okx.basic_info", e)
+        else:
+            report.record("okx.basic_info", b.okx_basic_info)
         for attr, factory in (
             ("okx_advanced_info", lambda: svc.market.advanced_info(chain_index, addr)),
             ("okx_holders", lambda: svc.market.holders(chain_index, addr)),
             ("okx_trades", lambda: svc.market.trades(chain_index, addr)),
             ("okx_liquidity", lambda: svc.market.top_liquidity(chain_index, addr)),
         ):
+            label = "okx." + attr.removeprefix("okx_")
             try:
                 setattr(b, attr, await factory())
             except ClientError as exc:
-                log.info("okx %s failed for %s: %s", attr, addr, exc)
+                if report.failed(label, exc):
+                    log.info("okx %s failed for %s: %s", attr, addr, exc)
+            else:
+                report.record(label, getattr(b, attr))
 
     async def _okx_listing() -> None:
         """Resolve whether the token is tradable on OKX spot.
@@ -172,10 +187,13 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
                 quote_ccy=svc.settings.okx_quote_ccy,
             )
         except ClientError as e:
-            log.info("okx instrument lookup failed for %s: %s", ref.symbol, e)
+            if report.failed("okx_trade.instruments", e):
+                log.info("okx instrument lookup failed for %s: %s", ref.symbol, e)
             b.okx_available = None
             b.okx_identity_reason = str(e)
             return
+        else:
+            report.record("okx_trade.instruments", availability is not None)
         b.okx_inst_id = inst
         b.okx_available = availability
         b.okx_identity_reason = reason
@@ -196,8 +214,10 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
         try:
             m = await svc.dexscreener.token_market(addr)
         except ClientError as e:
-            log.info("dexscreener failed for %s: %s", addr, e)
+            if report.failed("dexscreener", e):
+                log.info("dexscreener failed for %s: %s", addr, e)
             return
+        report.record("dexscreener", m)
         if not m:
             return
         b.dexscreener = m
@@ -218,7 +238,10 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
         try:
             b.geckoterminal = await svc.geckoterminal.token_market(addr)
         except ClientError as e:
-            log.info("geckoterminal failed for %s: %s", addr, e)
+            if report.failed("geckoterminal", e):
+                log.info("geckoterminal failed for %s: %s", addr, e)
+        else:
+            report.record("geckoterminal", b.geckoterminal)
 
     async def _onchain() -> None:
         if not svc.node.enabled:
@@ -234,12 +257,18 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
             if not ref.name:
                 ref.name = await svc.node.erc20_name(addr)
         except ClientError as e:
-            log.info("onchain erc20 read failed for %s: %s", addr, e)
+            if report.failed("node.erc20", e):
+                log.info("onchain erc20 read failed for %s: %s", addr, e)
+        else:
+            report.record("node.erc20", b.onchain_total_supply)
 
         try:
             b.contract_flags, b.contract_detail = await svc.node.contract_risk_flags(addr)
         except ClientError as e:
-            log.info("contract scan failed for %s: %s", addr, e)
+            if report.failed("node.bytecode", e):
+                log.info("contract scan failed for %s: %s", addr, e)
+        else:
+            report.record("node.bytecode", b.contract_detail or b.contract_flags)
 
         try:
             latest = await svc.node.block_number()
@@ -251,13 +280,20 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
                     if ts:
                         b.deployed_at = dt.datetime.fromtimestamp(ts, dt.timezone.utc)
         except ClientError as e:
-            log.info("deploy-block lookup failed for %s: %s", addr, e)
+            if report.failed("node.deploy_block", e):
+                log.info("deploy-block lookup failed for %s: %s", addr, e)
+        else:
+            report.record("node.deploy_block", b.deployed_at)
 
     async def _verification() -> None:
         if not svc.explorer.enabled:
             return
+        # No try/except here on purpose: a failure propagates to run_sources,
+        # which attributes it to "explorer" and logs it with a traceback.
         b.contract_verified = await svc.explorer.is_verified(addr)
+        report.record("explorer.verified", b.contract_verified is not None)
         b.explorer_counters = await svc.explorer.token_counters(addr)
+        report.record("explorer.counters", b.explorer_counters)
 
     async def _data_metadata() -> None:
         if not svc.data.enabled:
@@ -265,7 +301,10 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
         try:
             b.rh_meta = await svc.data.token_metadata(addr)
         except ClientError as exc:
-            log.info("alchemy token metadata failed for %s: %s", addr, exc)
+            if report.failed("rh_data.metadata", exc):
+                log.info("alchemy token metadata failed for %s: %s", addr, exc)
+        else:
+            report.record("rh_data.metadata", b.rh_meta)
 
     async def _indexed_activity() -> None:
         if not svc.data.enabled or b.latest_block is None:
@@ -278,7 +317,10 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
             rows = result.get("transfers")
             b.rh_transfers = rows if isinstance(rows, list) else []
         except ClientError as exc:
-            log.info("alchemy transfer history failed for %s: %s", addr, exc)
+            if report.failed("rh_data.transfers", exc):
+                log.info("alchemy transfer history failed for %s: %s", addr, exc)
+        else:
+            report.record("rh_data.transfers", b.rh_transfers)
 
     async def _holders() -> None:
         # Alchemy's documented Token API is wallet-centric, not a global holder
@@ -309,17 +351,26 @@ async def collect(svc: Services, ref: TokenRef, history: dict[str, Any]) -> RawB
     # Metadata/decimals and pool addresses must land before venue identity and
     # holder calculations. This avoids the old race that silently assumed 18
     # decimals while an on-chain read was still running.
-    await asyncio.gather(
-        _dexscreener(), _geckoterminal(), _okx(), _onchain(), _verification(), _data_metadata(),
-        return_exceptions=True,
-    )
+    report = report if report is not None else SourceReport()
+    await run_sources(report, {
+        "dexscreener": _dexscreener,
+        "geckoterminal": _geckoterminal,
+        "okx": _okx,
+        "node": _onchain,
+        "explorer": _verification,
+        "rh_data": _data_metadata,
+    })
     if b.okx_basic_info:
         ref.symbol = ref.symbol or b.okx_basic_info.get("tokenSymbol")
         ref.name = ref.name or b.okx_basic_info.get("tokenName")
     if b.rh_meta:
         ref.symbol = ref.symbol or b.rh_meta.get("symbol")
         ref.name = ref.name or b.rh_meta.get("name")
-    await asyncio.gather(_okx_listing(), _holders(), _indexed_activity(), return_exceptions=True)
+    await run_sources(report, {
+        "okx_trade": _okx_listing,
+        "holders": _holders,
+        "activity": _indexed_activity,
+    })
 
     # Oracle sanity check on the quote asset, when configured.
     if svc.chainlink.enabled and ref.symbol:
@@ -489,7 +540,9 @@ def persist_evaluation(session: Session, token: Token, snapshot_row: TokenSnapsh
 # ===========================================================================
 # Per-token pipeline
 # ===========================================================================
-async def process_token(svc: Services, ref: TokenRef, c: Settings) -> dict[str, Any]:
+async def process_token(
+    svc: Services, ref: TokenRef, c: Settings, report: SourceReport | None = None
+) -> dict[str, Any]:
     with session_scope() as session:
         existing = session.execute(
             select(Token).where(Token.chain == ref.chain, Token.address == ref.address)
@@ -508,7 +561,7 @@ async def process_token(svc: Services, ref: TokenRef, c: Settings) -> dict[str, 
         consecutive = count_consecutive_passes(prior_evals)
         recent_scores = [e.score_total for e in prior_evals[:5]]
 
-    bundle = await collect(svc, ref, history)
+    bundle = await collect(svc, ref, history, report)
     snap = normalize(bundle, c)
 
     gates = evaluate_gates(snap, c)
@@ -640,13 +693,18 @@ async def run_cycle(svc: Services | None = None) -> dict[str, Any]:
         refs = await discover_tokens(svc)
         log.info("cycle start: %d candidate tokens", len(refs))
 
+        # One tally for the whole cycle: 22 scattered INFO lines do not tell an
+        # operator which connection is down, a single block at the end does.
+        report = SourceReport()
+
         results: list[dict[str, Any]] = []
-        for ref in refs:
-            try:
-                results.append(await process_token(svc, ref, c))
-            except Exception as e:  # noqa: BLE001 - one bad token must not kill the cycle
-                log.exception("token %s failed: %s", ref.address, e)
-                results.append({"token": ref.address, "state": "ERROR", "reason": str(e)})
+        with use_report(report):
+            for ref in refs:
+                try:
+                    results.append(await process_token(svc, ref, c, report))
+                except Exception as e:  # noqa: BLE001 - one bad token must not kill the cycle
+                    log.exception("token %s failed: %s", ref.address, e)
+                    results.append({"token": ref.address, "state": "ERROR", "reason": str(e)})
 
         summary = {
             "started_at": started.isoformat(),
@@ -656,6 +714,18 @@ async def run_cycle(svc: Services | None = None) -> dict[str, Any]:
             "by_state": _tally(results),
             "results": results,
         }
+        report.log(tokens=len(results))
+        summary["connections"] = {
+            name: {"ok": o.ok, "failed": o.failed, "error": o.worst_error}
+            for name, o in report.connections.items()
+        }
+        summary["dead_connections"] = report.dead_connections()
+        summary["sources"] = {
+            name: {"ok": o.ok, "empty": o.empty, "failed": o.failed,
+                   "error": o.worst_error}
+            for name, o in report.sources.items()
+        }
+        summary["silent_sources"] = report.silent_sources()
         log.info("cycle done in %.1fs: %s", summary["duration_s"], summary["by_state"])
         return summary
     finally:

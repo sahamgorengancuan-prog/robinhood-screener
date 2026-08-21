@@ -14,6 +14,8 @@ from typing import Any
 
 import httpx
 
+from app.pipeline.source_health import record_http_failure, record_http_ok
+
 log = logging.getLogger(__name__)
 
 RETRYABLE_STATUS = {408, 425, 429, 500, 502, 503, 504}
@@ -150,10 +152,15 @@ class BaseHTTPClient:
                         f"{self.name} retryable {resp.status_code}", request=resp.request, response=resp
                     )
                 if resp.status_code >= 400:
-                    raise ClientError(f"{self.name} {method} {path} -> {resp.status_code}: {resp.text[:300]}")
+                    err = ClientError(
+                        f"{self.name} {method} {path} -> {resp.status_code}: {resp.text[:300]}"
+                    )
+                    record_http_failure(self.name, method, path, err)
+                    raise err
                 data = resp.json() if resp.content else None
                 if cache_key and data is not None:
                     self.cache.set(cache_key, data)
+                record_http_ok(self.name, method, path)
                 return data
             except (httpx.HTTPStatusError, httpx.TransportError, httpx.TimeoutException) as e:
                 last_err = e
@@ -164,7 +171,9 @@ class BaseHTTPClient:
                 await asyncio.sleep(delay)
 
         attempts = "no retry" if self.max_retries == 0 else f"{self.max_retries} retries"
-        raise ClientError(f"{self.name} {method} {path} failed ({attempts}): {last_err}")
+        err = ClientError(f"{self.name} {method} {path} failed ({attempts}): {last_err}")
+        record_http_failure(self.name, method, path, err)
+        raise err
 
 
 def pick(payload: Any, *candidates: str, default: Any = None) -> Any:

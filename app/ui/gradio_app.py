@@ -339,6 +339,27 @@ async def do_run_cycle(progress=gr.Progress()):
     if not summary["tokens"]:
         msg += ("<br>Tidak ada kandidat. Aktifkan OKX hot-token / RPC mint-log discovery, "
                 "atau tambahkan kontrak manual di tab Token Inspector.")
+
+    # A source that answered nothing all cycle is the difference between "these
+    # tokens are genuinely bad" and "the screener was blind". Say which, here,
+    # rather than only in a terminal the operator may never look at.
+    # An endpoint that never answered is the difference between "these tokens
+    # are genuinely bad" and "the screener was blind". Say which, here, rather
+    # than only in a terminal the operator may never look at.
+    dead = summary.get("dead_connections") or []
+    if dead:
+        kind = WARN
+        detail = "<br>".join(
+            f"&nbsp;&nbsp;• <b>{html.escape(name)}</b> — "
+            f"{html.escape(summary['connections'][name]['error'] or 'gagal')}"
+            for name in dead[:8]
+        )
+        more = f"<br>&nbsp;&nbsp;… dan {len(dead) - 8} endpoint lain" if len(dead) > 8 else ""
+        msg += (f"<br>⚠️ <b>{len(dead)} endpoint tidak pernah menjawab siklus ini:</b><br>"
+                f"{detail}{more}"
+                "<br>Selama ini terjadi, field yang mereka isi terbaca <i>unavailable</i> dan "
+                "token ditolak secara fail-closed — penolakan itu belum tentu soal tokennya. "
+                "Periksa tab <b>Koneksi &amp; API Test</b>.")
     return banner(kind, msg), rows, cards
 
 
