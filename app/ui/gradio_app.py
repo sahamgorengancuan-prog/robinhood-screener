@@ -31,6 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import functools
+import html
+import inspect
 import json
 import logging
 from pathlib import Path
@@ -63,6 +66,65 @@ from app.ui.theme import CSS, banner, metric_cards, score_bars, state_pill, them
 from app.alerts.formatter import build_body
 
 log = logging.getLogger(__name__)
+
+
+# --------------------------------------------------------------- error guard
+#: Marks the output slot that should receive the error banner in `guarded()`.
+ERROR_SLOT = object()
+
+
+def _error_banner(fn_name: str, exc: BaseException) -> str:
+    # The message can contain anything, including a URL or a chunk of a
+    # response body, so it is escaped before it goes into the banner's HTML.
+    return banner(
+        FAIL,
+        f"<b>{html.escape(type(exc).__name__)}</b> di <code>{html.escape(fn_name)}</code>: "
+        f"{html.escape(str(exc)) or '(tanpa pesan)'}"
+        "<br><span style='opacity:.75'>Traceback lengkap ada di jendela terminal "
+        "yang membuka panel ini.</span>",
+    )
+
+
+def guarded(fn, *fallback):
+    """Render a handler's crash into the page instead of losing it to a toast.
+
+    Gradio shows an unhandled exception as a bare red "Error" pill carrying no
+    text at all — it hides the message unless `launch(show_error=True)`. In a
+    panel whose entire purpose is diagnosing why a number looks wrong, a
+    content-free "Error" is the least useful thing it could say, and it is
+    exactly what an operator saw on a fresh Windows install.
+
+    Wrapping happens at the wiring site rather than on the functions
+    themselves, so the handlers stay ordinary callables that tests can call and
+    let raise.
+
+    `fallback` supplies one value per output component; the slot passed as
+    `ERROR_SLOT` receives the error banner.
+    """
+    def _fallback(exc: BaseException):
+        log.exception("panel handler %s failed", getattr(fn, "__name__", fn))
+        name = getattr(fn, "__name__", "handler")
+        values = tuple(
+            _error_banner(name, exc) if v is ERROR_SLOT else v for v in fallback
+        )
+        return values[0] if len(values) == 1 else values
+
+    if inspect.iscoroutinefunction(fn):
+        @functools.wraps(fn)
+        async def awrapper(*args, **kwargs):
+            try:
+                return await fn(*args, **kwargs)
+            except Exception as exc:  # noqa: BLE001 — the whole point
+                return _fallback(exc)
+        return awrapper
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:  # noqa: BLE001 — the whole point
+            return _fallback(exc)
+    return wrapper
 
 
 def fmt_bps(v: float | None) -> str:
@@ -949,10 +1011,11 @@ def build_ui() -> gr.Blocks:
                     alert_btn = gr.Button("📨 Kirim alert uji ke semua sink")
                 alert_result = gr.HTML()
 
-                ping_btn.click(do_quick_ping, [rpc_url], [conn_banner])
-                test_btn.click(do_connection_test, [probe_addr] + creds,
+                ping_btn.click(guarded(do_quick_ping, ERROR_SLOT), [rpc_url], [conn_banner])
+                test_btn.click(guarded(do_connection_test, ERROR_SLOT, [], {}, ""),
+                               [probe_addr] + creds,
                                [conn_banner, conn_table, conn_detail, conn_fixes])
-                alert_btn.click(do_alert_test, None, [alert_result])
+                alert_btn.click(guarded(do_alert_test, ERROR_SLOT), None, [alert_result])
 
             # ===================================================== TAB 2
             with gr.Tab("📊 Screener"):
@@ -1002,8 +1065,10 @@ def build_ui() -> gr.Blocks:
                     add_btn = gr.Button("➕ Tambah", scale=1)
                 add_result = gr.HTML()
 
-                run_btn.click(do_run_cycle, None, [cycle_banner, screener_table, screener_cards])
-                refresh_btn.click(load_screener, [state_filter, min_score], [screener_table, screener_cards])
+                run_btn.click(guarded(do_run_cycle, ERROR_SLOT, [], ""),
+                              None, [cycle_banner, screener_table, screener_cards])
+                refresh_btn.click(guarded(load_screener, [], ERROR_SLOT),
+                                  [state_filter, min_score], [screener_table, screener_cards])
                 state_filter.change(load_screener, [state_filter, min_score], [screener_table, screener_cards])
                 min_score.release(load_screener, [state_filter, min_score], [screener_table, screener_cards])
                 add_btn.click(add_token_to_watchlist, [add_addr, add_sym], [add_result])
@@ -1117,7 +1182,7 @@ def build_ui() -> gr.Blocks:
                     else:
                         comp.change(lab_evaluate, lab_all, lab_out)
 
-                demo.load(lab_evaluate, lab_all, lab_out)
+                demo.load(guarded(lab_evaluate, ERROR_SLOT, "", ""), lab_all, lab_out)
 
             # ===================================================== TAB 5
             with gr.Tab("🛡️ Risiko & Order"):
@@ -1195,7 +1260,8 @@ def build_ui() -> gr.Blocks:
         save_btn.click(do_save_setup, setup_inputs, [setup_result, cfg_json]) \
                 .then(setup_status, None, [setup_cards])
         initdb_btn.click(do_init_db, None, [setup_result])
-        reload_setup_btn.click(load_setup_values, None, setup_inputs) \
+        reload_setup_btn.click(guarded(load_setup_values, *([gr.skip()] * len(setup_inputs))),
+                               None, setup_inputs) \
                         .then(setup_status, None, [setup_cards])
 
         # ---- pipeline control wiring ------------------------------------
@@ -1204,10 +1270,12 @@ def build_ui() -> gr.Blocks:
         run_btn.click(scheduler_status_html, None, [sched_banner])
 
         # initial load
-        demo.load(risk_status, None, [risk_banner, risk_cards])
-        demo.load(load_screener, [state_filter, min_score], [screener_table, screener_cards])
-        demo.load(load_setup_values, None, setup_inputs)
-        demo.load(setup_status, None, [setup_cards])
+        demo.load(guarded(risk_status, ERROR_SLOT, ""), None, [risk_banner, risk_cards])
+        demo.load(guarded(load_screener, [], ERROR_SLOT),
+                  [state_filter, min_score], [screener_table, screener_cards])
+        demo.load(guarded(load_setup_values, *([gr.skip()] * len(setup_inputs))),
+                  None, setup_inputs)
+        demo.load(guarded(setup_status, ERROR_SLOT), None, [setup_cards])
 
     return demo
 
@@ -1242,6 +1310,9 @@ def main() -> None:
         inbrowser=inbrowser,
         theme=theme(),
         css=CSS,
+        # Without this Gradio renders every exception as a bare "Error" pill with
+        # no text, which tells an operator nothing about what to fix.
+        show_error=True,
     )
 
 

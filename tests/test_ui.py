@@ -152,6 +152,87 @@ def test_ui_never_writes_credentials_to_disk():
     assert "open(" not in source and "write" not in source
 
 
+# -------------------------------------------------------------- error guard
+def test_guarded_puts_the_real_message_in_the_page():
+    """A crashed handler used to reach the operator as a red pill reading only
+    "Error" — Gradio hides the message by default. That is worthless in a panel
+    whose job is diagnosis."""
+    import app.ui.gradio_app as ui
+
+    def boom():
+        raise RuntimeError("OKX returned 401: Invalid OK-ACCESS-KEY")
+
+    html = ui.guarded(boom, ui.ERROR_SLOT)()
+    assert "RuntimeError" in html
+    assert "Invalid OK-ACCESS-KEY" in html
+
+
+def test_guarded_keeps_the_other_output_slots_usable():
+    """Handing a Dataframe an HTML string, or a JSON component a str, produces a
+    second failure on top of the first."""
+    import app.ui.gradio_app as ui
+
+    def boom():
+        raise ValueError("nope")
+
+    banner, table, detail, fixes = ui.guarded(boom, ui.ERROR_SLOT, [], {}, "")()
+    assert "ValueError" in banner
+    assert table == [] and detail == {} and fixes == ""
+
+
+def test_guarded_escapes_the_exception_text():
+    import app.ui.gradio_app as ui
+
+    def boom():
+        raise ValueError("<script>alert(1)</script>")
+
+    out = ui.guarded(boom, ui.ERROR_SLOT)()
+    assert "<script>" not in out
+    assert "&lt;script&gt;" in out
+
+
+def test_guarded_passes_through_on_success():
+    import app.ui.gradio_app as ui
+
+    assert ui.guarded(lambda: "fine", ui.ERROR_SLOT)() == "fine"
+
+
+def test_guarded_handles_async_handlers():
+    """do_connection_test and do_inspect are coroutines; a decorator that only
+    understands sync functions would return an un-awaited coroutine object."""
+    import asyncio
+
+    import app.ui.gradio_app as ui
+
+    async def boom():
+        raise RuntimeError("connect timeout")
+
+    out = asyncio.run(ui.guarded(boom, ui.ERROR_SLOT)())
+    assert "connect timeout" in out
+
+
+def test_every_automatic_handler_is_guarded():
+    """Handlers that run on page load have no operator standing by to retry
+    them, so an unguarded one is a silent panel."""
+    import inspect
+
+    import app.ui.gradio_app as ui
+
+    for line in inspect.getsource(ui.build_ui).splitlines():
+        if "demo.load(" in line:
+            assert "guarded(" in line, f"unguarded load handler: {line.strip()}"
+
+
+def test_launch_shows_error_text():
+    """Belt and braces: the guard covers wired handlers, show_error covers
+    anything raised outside one."""
+    import inspect
+
+    import app.ui.gradio_app as ui
+
+    assert "show_error=True" in inspect.getsource(ui.main)
+
+
 # ------------------------------------------------------------------- theme
 def test_score_bars_render_every_component():
     html = score_bars([("liquidity", 23.4, 30), ("holders", 19.1, 25)], 85.4)
