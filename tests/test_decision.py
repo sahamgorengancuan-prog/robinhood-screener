@@ -199,3 +199,43 @@ def test_ordering_is_a_no_op_when_no_root_cause_gate_failed(now, settings):
     snap = make_snapshot(now, top1_holder_pct=45.0, liquidity_usd=1_000.0)
     hard = summarize(evaluate_gates(snap, settings))["hard"]
     assert [g.name for g in root_cause_first(hard)] == [g.name for g in hard]
+
+
+# ----------------------------------------------------- reason string hygiene
+def test_gates_blocked_by_the_same_input_say_it_once(now, settings):
+    """tradeable_token and contract_flags both need the bytecode scan. A node
+    returning nothing produced the identical sentence twice, and because the
+    reason is truncated for display the duplicate pushed the *other* failures
+    off the end — exactly the ones that would have said something new."""
+    snap = make_snapshot(now, contract_flags=[], is_proxy=None)
+    d = run(snap, settings)
+    assert d.reason.count("contract bytecode scan unavailable") == 1
+
+
+def test_a_fail_closed_reason_names_the_upstream_to_fix(now, settings):
+    """"contract bytecode scan unavailable" reads as a verdict about the token
+    when it is really a verdict about the node."""
+    snap = make_snapshot(now, contract_flags=[], is_proxy=None, liquidity_usd=None,
+                         slippage_bps=None, contract_verified=None)
+    d = run(snap, settings)
+    assert "[source: rh_node eth_getCode]" in d.reason
+    assert "[source: explorer / Blockscout]" in d.reason
+
+
+def test_dedupe_preserves_order_and_drops_nothing_distinct():
+    from app.pipeline.decision import distinct_reasons
+
+    class G:
+        def __init__(self, reason):
+            self.reason = reason
+
+    out = distinct_reasons([G("a"), G("b"), G("a"), G("c"), G("b")])
+    assert out == ["a", "b", "c"]
+
+
+def test_unlock_reason_says_no_api_can_supply_it(now, settings):
+    """The one dependency no key unlocks. An operator hunting for an API to buy
+    would be hunting for something that does not exist."""
+    snap = make_snapshot(now, days_to_major_unlock=None)
+    d = run(snap, settings)
+    assert "manual review, no API" in d.reason

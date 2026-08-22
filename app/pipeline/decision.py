@@ -61,6 +61,24 @@ def is_stable(ctx: DecisionContext, c: Settings) -> tuple[bool, str]:
 ROOT_CAUSE_GATES = ("tradeable_token", "contract_verified", "contract_flags")
 
 
+def distinct_reasons(results) -> list[str]:
+    """Collapse gates blocked by the same missing input to one statement.
+
+    gate_tradeable_token and gate_contract_flags both need the bytecode scan, so
+    a node returning nothing produced the identical sentence twice. The reason
+    string is truncated for display, so the duplicate pushed the *other*
+    failures — the ones that would have told the operator something new — off
+    the end.
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for g in results:
+        if g.reason not in seen:
+            seen.add(g.reason)
+            out.append(g.reason)
+    return out
+
+
 def root_cause_first(results):
     """Order hard failures so the explanation precedes its symptoms.
 
@@ -81,13 +99,13 @@ def decide(
 
     # 1 — hard failures are terminal.
     if buckets["hard"]:
-        reasons = "; ".join(g.reason for g in root_cause_first(buckets["hard"]))
+        reasons = "; ".join(distinct_reasons(root_cause_first(buckets["hard"])))
         return Decision(state=DecisionState.REJECT, score=score, gates=gates,
                         reason=f"HARD gate failure: {reasons}", hard_fail=True)
 
     # 2 — missing data can never be assumed favourable.
     if buckets["data"]:
-        reasons = "; ".join(g.reason for g in buckets["data"])
+        reasons = "; ".join(distinct_reasons(buckets["data"]))
         return Decision(state=DecisionState.WATCH, score=score, gates=gates,
                         reason=f"insufficient data: {reasons}", insufficient_data=True)
 

@@ -38,8 +38,31 @@ def _missing(name: str, field: str) -> GateResult:
         name=name,
         passed=False,
         severity=Severity.DATA,
-        reason=f"{field} unavailable — cannot evaluate (unknown is never treated as safe)",
+        reason=f"{field} unavailable — cannot evaluate "
+               f"(unknown is never treated as safe){_source_hint(field)}",
     )
+
+
+#: Which upstream is responsible for each fail-closed dependency. Naming the
+#: missing metric tells an operator *what* is absent; naming the source tells
+#: them where to go and fix it. Without this, "contract bytecode scan
+#: unavailable" reads as a verdict about the token when it is really a verdict
+#: about the node.
+RESPONSIBLE_SOURCE = {
+    "contract bytecode scan": "rh_node eth_getCode",
+    "contract source verification": "explorer / Blockscout",
+    "liquidity_usd": "dexscreener, geckoterminal or okx price-info",
+    "total_supply": "rh_node eth_call totalSupply()",
+    "unique_holders": "explorer token-counters or okx holder",
+    "top1_holder_pct": "explorer token-holders or okx holder",
+    "top10_holder_pct": "explorer token-holders or okx holder",
+    "reviewed major-unlock schedule": "TOKENOMICS_OVERRIDES_JSON — manual review, no API",
+}
+
+
+def _source_hint(field: str) -> str:
+    source = RESPONSIBLE_SOURCE.get(field)
+    return f" [source: {source}]" if source else ""
 
 
 def _critical_missing(name: str, field: str) -> GateResult:
@@ -47,7 +70,7 @@ def _critical_missing(name: str, field: str) -> GateResult:
         name=name,
         passed=False,
         severity=Severity.HARD,
-        reason=f"{field} unavailable — explicit fail-closed requirement",
+        reason=f"{field} unavailable — explicit fail-closed requirement{_source_hint(field)}",
     )
 
 
