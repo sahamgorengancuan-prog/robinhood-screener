@@ -30,6 +30,8 @@ from app.execution.portfolio import exposure_for
 from app.execution.order_safety import check_exposure
 from app.models import Evaluation, Token, TokenSnapshot, utcnow
 from app.pipeline.decision import DecisionContext, decide
+from app.pipeline.acceleration import Sample, acceleration
+from app.pipeline.outcomes import label_snapshots
 from app.pipeline.source_health import SourceReport, run_sources, use_report
 from app.pipeline.normalize import NON_HOLDER_ADDRESSES, RawBundle, normalize
 from app.pipeline.risk import evaluate_gates, summarize
@@ -379,6 +381,8 @@ async def collect(
     b.prev_holders = history.get("prev_holders")
     b.prev_holders_at = history.get("prev_holders_at")
     b.price_history_7d = history.get("price_history_7d", [])
+    b.holder_series = history.get("holder_series", [])
+    b.buy_count_series = history.get("buy_count_series", [])
     return b
 
 
@@ -405,10 +409,23 @@ def load_history(session: Session, token_id: int) -> dict[str, Any]:
         default=None,
     )
 
+    # Full series for the acceleration layer. A single baseline supports a
+    # growth rate; a second derivative needs the whole sequence.
+    holder_series = [
+        Sample(at=_aware(r.captured_at), value=float(r.unique_holders))
+        for r in reversed(rows) if r.unique_holders is not None
+    ]
+    buy_series = [
+        Sample(at=_aware(r.captured_at), value=float(r.buys_24h))
+        for r in reversed(rows) if r.buys_24h is not None
+    ]
+
     return {
         "prev_holders": baseline.unique_holders if baseline else None,
         "prev_holders_at": _aware(baseline.captured_at) if baseline else None,
         "price_history_7d": list(reversed(prices)),
+        "holder_series": holder_series,
+        "buy_count_series": buy_series,
     }
 
 
@@ -481,6 +498,13 @@ def persist_snapshot(session: Session, token: Token, snap: NormalizedSnapshot) -
         volume_1h=snap.volume_1h,
         volume_24h=snap.volume_24h,
         tx_count_24h=snap.tx_count_24h,
+        buys_24h=snap.buys_24h,
+        sells_24h=snap.sells_24h,
+        holder_growth_prev_pct=snap.holder_growth_prev_pct,
+        holder_acceleration_pp=snap.holder_acceleration_pp,
+        buy_count_growth_pct=snap.buy_count_growth_pct,
+        buy_count_growth_prev_pct=snap.buy_count_growth_prev_pct,
+        buy_count_acceleration_pp=snap.buy_count_acceleration_pp,
         buy_ratio_24h=snap.buy_ratio_24h,
         trade_sample_size=snap.trade_sample_size,
         unique_trader_ratio=snap.unique_trader_ratio,
@@ -714,7 +738,17 @@ async def run_cycle(svc: Services | None = None) -> dict[str, Any]:
             "by_state": _tally(results),
             "results": results,
         }
+        # Labelling runs after screening, never before: it must not delay a
+        # decision, and a failure here must not cost the cycle its results.
+        try:
+            with session_scope() as session:
+                summary_labels = label_snapshots(session)
+        except Exception:  # noqa: BLE001 - the dataset is not worth a dead cycle
+            log.exception("forward-return labelling failed")
+            summary_labels = {"labelled": 0, "snapshots": 0}
+
         report.log(tokens=len(results))
+        summary["labels"] = summary_labels
         summary["connections"] = {
             name: {"ok": o.ok, "failed": o.failed, "error": o.worst_error}
             for name, o in report.connections.items()

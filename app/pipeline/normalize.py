@@ -19,6 +19,7 @@ from typing import Any
 
 from app.config import Settings
 from app.pipeline import metrics
+from app.pipeline.acceleration import acceleration
 from app.schemas import NormalizedSnapshot, TokenRef
 from app.util.reconcile import reconcile_liquidity, reconcile_prices
 
@@ -76,6 +77,8 @@ class RawBundle:
         self.holder_balances: list[float] = []
         self.holder_basis_is_partial: bool = True
         self.buys_24h: int | None = None
+        self.holder_series: list = []
+        self.buy_count_series: list = []
         self.sells_24h: int | None = None
         # History injected by the caller from previous snapshots.
         self.prev_holders: int | None = None
@@ -250,7 +253,22 @@ def normalize(bundle: RawBundle, c: Settings, now: dt.datetime | None = None) ->
             raw_growth = (snap.unique_holders - bundle.prev_holders) / bundle.prev_holders * 100.0
             snap.set_field("holder_growth_24h_pct", raw_growth * (24.0 / hours), "derived")
 
+    # ---------------------------------------------------------- acceleration
+    # Compared over two equal 24h windows. Equal length is the point: a 1h rate
+    # measured against a 24h rate describes the windows, not the token.
+    window = dt.timedelta(hours=24)
+    holder_accel = acceleration(bundle.holder_series, now, window)
+    snap.set_field("holder_growth_prev_pct", holder_accel["prev_growth_pct"], "derived")
+    snap.set_field("holder_acceleration_pp", holder_accel["acceleration_pp"], "derived")
+
+    buy_accel = acceleration(bundle.buy_count_series, now, window)
+    snap.set_field("buy_count_growth_pct", buy_accel["growth_pct"], "derived")
+    snap.set_field("buy_count_growth_prev_pct", buy_accel["prev_growth_pct"], "derived")
+    snap.set_field("buy_count_acceleration_pp", buy_accel["acceleration_pp"], "derived")
+
     # ------------------------------------------------------------- flow split
+    snap.set_field("buys_24h", bundle.buys_24h, "derived")
+    snap.set_field("sells_24h", bundle.sells_24h, "derived")
     br = metrics.buy_ratio(bundle.buys_24h, bundle.sells_24h)
     snap.set_field("buy_ratio_24h", br, "derived")
     trade_quality = derive_trade_quality(bundle.okx_trades)

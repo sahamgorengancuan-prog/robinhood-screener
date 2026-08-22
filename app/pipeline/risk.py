@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.config import Settings
+from app.pipeline.liquidity_floor import effective_min_liquidity
 from app.schemas import GateResult, NormalizedSnapshot, Severity
 
 Gate = Callable[[NormalizedSnapshot, Settings], GateResult]
@@ -65,16 +66,23 @@ def _fail(name: str, sev: Severity, reason: str, value=None, threshold=None) -> 
 def gate_liquidity(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if s.liquidity_usd is None:
         return _critical_missing("liquidity_min", "liquidity_usd")
-    if s.liquidity_usd < c.min_liquidity_usd:
+
+    # The floor is stated with its derivation, so a rejection argues its case
+    # instead of quoting a constant back at the operator.
+    floor, why = effective_min_liquidity(c)
+    live_floor, live_why = effective_min_liquidity(c, live=True)
+
+    if s.liquidity_usd < floor:
         return _fail("liquidity_min", Severity.HARD,
-                     f"liquidity ${s.liquidity_usd:,.0f} below floor ${c.min_liquidity_usd:,.0f}",
-                     s.liquidity_usd, c.min_liquidity_usd)
-    if s.liquidity_usd < c.min_liquidity_usd_live:
+                     f"liquidity ${s.liquidity_usd:,.0f} below floor ${floor:,.0f} ({why})",
+                     s.liquidity_usd, floor)
+    if s.liquidity_usd < live_floor:
         return _fail("liquidity_live_min", Severity.LIVE_ONLY,
                      f"liquidity ${s.liquidity_usd:,.0f} below live-trade floor "
-                     f"${c.min_liquidity_usd_live:,.0f} — alert/paper only",
-                     s.liquidity_usd, c.min_liquidity_usd_live)
-    return _ok("liquidity_min", f"liquidity ${s.liquidity_usd:,.0f}", s.liquidity_usd, c.min_liquidity_usd)
+                     f"${live_floor:,.0f} ({live_why}) — alert/paper only",
+                     s.liquidity_usd, live_floor)
+    return _ok("liquidity_min", f"liquidity ${s.liquidity_usd:,.0f} clears ${floor:,.0f}",
+               s.liquidity_usd, floor)
 
 
 @gate

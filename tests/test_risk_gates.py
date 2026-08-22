@@ -43,8 +43,17 @@ def test_liquidity_below_floor_is_hard_reject(now, settings):
 
 
 def test_liquidity_between_floors_blocks_live_only(now, settings):
-    # Volume scaled down with liquidity so only the liquidity dimension varies.
-    snap = make_snapshot(now, liquidity_usd=200_000.0, volume_24h=300_000.0, volume_1h=12_000.0)
+    # Sit deliberately between the two floors, derived from the settings rather
+    # than hard-coded, so re-tuning the floors cannot silently void this test.
+    from app.pipeline.liquidity_floor import effective_min_liquidity
+
+    entry, _ = effective_min_liquidity(settings)
+    live, _ = effective_min_liquidity(settings, live=True)
+    between = (entry + live) / 2
+    assert entry < between < live
+    # Volume scaled with liquidity so only the liquidity dimension varies.
+    snap = make_snapshot(now, liquidity_usd=between,
+                         volume_24h=between * 1.5, volume_1h=between * 0.06)
     results = evaluate_gates(snap, settings)
     g = next(x for x in results if x.name == "liquidity_live_min")
     assert not g.passed and g.severity == Severity.LIVE_ONLY

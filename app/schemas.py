@@ -75,6 +75,10 @@ class NormalizedSnapshot(BaseModel):
     volume_24h: float | None = None
     tx_count_24h: int | None = None
     buy_ratio_24h: float | None = None
+    #: Raw counts kept alongside the ratio: the ratio alone cannot support a
+    #: growth rate, and buy-count acceleration needs the series.
+    buys_24h: int | None = None
+    sells_24h: int | None = None
     trade_sample_size: int | None = None
     unique_trader_ratio: float | None = None
     top_trader_volume_pct: float | None = None
@@ -86,6 +90,14 @@ class NormalizedSnapshot(BaseModel):
     top10_holder_pct: float | None = None
     whale_concentration: float | None = None
     holder_growth_24h_pct: float | None = None
+    #: Second derivatives. Growth says "rising"; acceleration says "the rise is
+    #: getting faster", which is what separates entering expansion from having
+    #: already expanded. None means not yet measurable, never "flat".
+    holder_growth_prev_pct: float | None = None
+    holder_acceleration_pp: float | None = None
+    buy_count_growth_pct: float | None = None
+    buy_count_growth_prev_pct: float | None = None
+    buy_count_acceleration_pp: float | None = None
 
     # microstructure
     spread_bps: float | None = None

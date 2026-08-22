@@ -130,6 +130,14 @@ class Settings(BaseSettings):
     # =================================================================
     # HARD RISK GATES — a token failing any of these can never be bought
     # =================================================================
+    # How the liquidity floor is decided. "derived" computes it from the clip
+    # size and slippage budget (see app/pipeline/liquidity_floor.py); "absolute"
+    # uses the two constants below verbatim; "derived_or_absolute" takes the
+    # stricter of the two. Default is derived, because a fixed 150k floor
+    # rejected every token on a chain whose deepest pool was 62k.
+    liquidity_floor_mode: str = "derived"
+    liquidity_safety_multiple: float = 10.0
+    liquidity_safety_multiple_live: float = 40.0
     min_liquidity_usd: float = 150_000.0
     min_liquidity_usd_live: float = 400_000.0
     max_slippage_bps: int = 150          # 1.5% on the intended clip size

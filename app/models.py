@@ -92,6 +92,8 @@ class TokenSnapshot(Base):
     volume_1h: Mapped[float | None] = mapped_column(Float)
     volume_24h: Mapped[float | None] = mapped_column(Float)
     tx_count_24h: Mapped[int | None] = mapped_column(Integer)
+    buys_24h: Mapped[int | None] = mapped_column(Integer)
+    sells_24h: Mapped[int | None] = mapped_column(Integer)
     buy_ratio_24h: Mapped[float | None] = mapped_column(Float)
     trade_sample_size: Mapped[int | None] = mapped_column(Integer)
     unique_trader_ratio: Mapped[float | None] = mapped_column(Float)
@@ -100,6 +102,11 @@ class TokenSnapshot(Base):
 
     # ---- holders
     unique_holders: Mapped[int | None] = mapped_column(Integer)
+    holder_growth_prev_pct: Mapped[float | None] = mapped_column(Float)
+    holder_acceleration_pp: Mapped[float | None] = mapped_column(Float)
+    buy_count_growth_pct: Mapped[float | None] = mapped_column(Float)
+    buy_count_growth_prev_pct: Mapped[float | None] = mapped_column(Float)
+    buy_count_acceleration_pp: Mapped[float | None] = mapped_column(Float)
     top1_holder_pct: Mapped[float | None] = mapped_column(Float)
     top10_holder_pct: Mapped[float | None] = mapped_column(Float)
     whale_concentration: Mapped[float | None] = mapped_column(Float)
@@ -206,6 +213,59 @@ class Alert(Base):
     body: Mapped[str] = mapped_column(Text)
     payload: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     delivered: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+
+
+class SnapshotOutcome(Base):
+    """What actually happened after a snapshot — the label half of the dataset.
+
+    Kept in its own table, one row per (snapshot, horizon), for three reasons.
+    It is written long after the snapshot, by a different job. It is the only
+    part of the schema that is allowed to be recomputed. And separating it makes
+    the survivor-bias trap visible: rows exist for *every* snapshot, including
+    the tokens that were rejected, because a model trained only on the ones that
+    were interesting would learn what the screener already believes.
+
+    `max_price` is the highest price observed *at a sampling instant*, not the
+    true intra-window high. At a 15-minute cadence a spike between samples is
+    invisible, so `observations` is stored alongside: a label backed by three
+    samples deserves less trust than one backed by fifty.
+    """
+
+    __tablename__ = "snapshot_outcome"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("token_snapshot.id", ondelete="CASCADE"), index=True)
+    token_id: Mapped[int] = mapped_column(ForeignKey("token.id", ondelete="CASCADE"), index=True)
+    horizon: Mapped[str] = mapped_column(String(8), index=True)
+
+    base_price: Mapped[float | None] = mapped_column(Float)
+    max_price: Mapped[float | None] = mapped_column(Float)
+    min_price: Mapped[float | None] = mapped_column(Float)
+    #: Peak gain and worst drawdown over the window, both relative to base_price.
+    max_return_pct: Mapped[float | None] = mapped_column(Float)
+    min_return_pct: Mapped[float | None] = mapped_column(Float)
+    end_return_pct: Mapped[float | None] = mapped_column(Float)
+
+    reached_2x: Mapped[bool | None] = mapped_column(Boolean)
+    reached_5x: Mapped[bool | None] = mapped_column(Boolean)
+    reached_10x: Mapped[bool | None] = mapped_column(Boolean)
+    seconds_to_2x: Mapped[int | None] = mapped_column(Integer)
+
+    #: Liquidity going to ~zero while the token still quotes a price is the
+    #: signature of a pull. Recorded, never inferred from price alone.
+    liquidity_drawdown_pct: Mapped[float | None] = mapped_column(Float)
+    rug_suspected: Mapped[bool | None] = mapped_column(Boolean)
+
+    observations: Mapped[int] = mapped_column(Integer, default=0)
+    window_complete: Mapped[bool] = mapped_column(Boolean, default=False)
+    computed_at: Mapped[dt.datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True)
+
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", "horizon", name="uq_outcome_snapshot_horizon"),
+        Index("ix_outcome_token_horizon", "token_id", "horizon"),
+    )
 
 
 class KVState(Base):

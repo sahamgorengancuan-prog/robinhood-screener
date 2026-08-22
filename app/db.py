@@ -8,6 +8,7 @@ readable while ingestion writes. Swap `DATABASE_URL` to Postgres when either
 
 from __future__ import annotations
 
+import logging
 import os
 from contextlib import contextmanager
 from collections.abc import Iterator
@@ -18,6 +19,8 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from app.config import get_settings
 from app.models import Base
+
+log = logging.getLogger(__name__)
 
 _engine: Engine | None = None
 _SessionLocal: sessionmaker[Session] | None = None
@@ -57,8 +60,50 @@ def get_engine() -> Engine:
     return _engine
 
 
+def _add_missing_columns(engine: Engine) -> list[str]:
+    """Additive schema migration for SQLite.
+
+    `create_all` creates missing *tables* but never alters existing ones, so a
+    new column silently turns every query against an already-populated database
+    into "no such column". The screener's whole value is the history it has
+    accumulated, so dropping and recreating is not an option.
+
+    Only nullable, default-less columns are added — that is what ALTER TABLE ADD
+    COLUMN can do safely on SQLite without rewriting the table. Anything else
+    (renames, type changes, NOT NULL) needs a real migration and is deliberately
+    not attempted here; it would fail loudly rather than corrupt data.
+    """
+    added: list[str] = []
+    if not engine.url.get_backend_name().startswith("sqlite"):
+        return added  # Postgres deployments get a real migration tool.
+
+    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy.schema import CreateColumn
+
+    inspector = sa_inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue  # create_all just made it, or will
+            have = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in have or not column.nullable or column.primary_key:
+                    continue
+                ddl = CreateColumn(column).compile(engine).string
+                conn.exec_driver_sql(f"ALTER TABLE {table.name} ADD COLUMN {ddl}")
+                added.append(f"{table.name}.{column.name}")
+
+    if added:
+        log.info("schema migration added %d column(s): %s", len(added), ", ".join(added))
+    return added
+
+
 def init_db() -> None:
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    _add_missing_columns(engine)
 
 
 @contextmanager
