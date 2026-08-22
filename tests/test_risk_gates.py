@@ -242,3 +242,29 @@ def test_a_raising_gate_fails_closed(now, settings, monkeypatch):
     assert not results[0].passed
     assert results[0].severity == Severity.HARD
     assert "failing closed" in results[0].reason
+
+
+# ------------------------------------------------- contract kind (not a token)
+@pytest.mark.parametrize(
+    "kind,fragment",
+    [("LP_SHARE", "liquidity-pool share"), ("VAULT_SHARE", "vault receipt")],
+)
+def test_pool_shares_and_vault_receipts_are_rejected(now, settings, kind, fragment):
+    """Discovery walks mint events, which surfaces UNI-V2 pair tokens and vault
+    receipts. An operator's real run showed several, each reported as "1 holders,
+    top holder 100%" — true, meaningless, and nothing to do with risk."""
+    snap = make_snapshot(now, contract_flags=[f"NOT_A_TRADEABLE_TOKEN:{kind}"])
+    g = result_for("tradeable_token", snap, settings)
+    assert not g.passed and g.severity == Severity.HARD
+    assert fragment in g.reason
+
+
+def test_a_plain_token_passes_the_kind_gate(good_snapshot, settings):
+    g = result_for("tradeable_token", good_snapshot, settings)
+    assert g.passed
+
+
+def test_unscanned_contract_cannot_pass_the_kind_gate(now, settings):
+    snap = make_snapshot(now, contract_flags=[], is_proxy=None)
+    g = result_for("tradeable_token", snap, settings)
+    assert not g.passed and g.severity == Severity.HARD

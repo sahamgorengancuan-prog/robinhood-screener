@@ -302,6 +302,35 @@ LIVE_BLOCKING_CONTRACT_FLAGS = {"UPGRADEABLE_PROXY", "PAUSABLE", "MUTABLE_FEES",
 
 
 @gate
+def gate_tradeable_token(s: NormalizedSnapshot, c: Settings) -> GateResult:
+    """Reject contracts that are not tokens anyone trades.
+
+    Discovery walks mint events, which surfaces liquidity-pool shares (UNI-V2),
+    ERC-4626 vault receipts and bridge wrappers alongside real tokens. Screening
+    those produces confident nonsense: a pair token legitimately has one holder
+    at 100% of supply and no pool of its own, so every holder and liquidity gate
+    fires for reasons that have nothing to do with risk.
+
+    The kind is read off the runtime bytecode, so this costs no extra RPC call
+    and is a fact about the contract rather than a guess from its symbol.
+    """
+    if not s.contract_flags and s.is_proxy is None:
+        # Same fail-closed condition as gate_contract_flags: an empty flag list
+        # means "scan produced nothing", which is not the same as "scan passed".
+        return _critical_missing("tradeable_token", "contract bytecode scan")
+    kinds = [f for f in s.contract_flags if f.startswith("NOT_A_TRADEABLE_TOKEN:")]
+    if kinds:
+        kind = kinds[0].split(":", 1)[1]
+        label = {
+            "LP_SHARE": "a liquidity-pool share (answers token0()/token1())",
+            "VAULT_SHARE": "an ERC-4626 vault receipt (answers asset())",
+        }.get(kind, kind)
+        return _fail("tradeable_token", Severity.HARD,
+                     f"not a tradeable token — this contract is {label}", kind)
+    return _ok("tradeable_token", "contract looks like a plain token")
+
+
+@gate
 def gate_contract_flags(s: NormalizedSnapshot, c: Settings) -> GateResult:
     if not s.contract_flags and s.is_proxy is None:
         return _critical_missing("contract_flags", "contract bytecode scan")

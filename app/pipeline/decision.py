@@ -54,6 +54,22 @@ def is_stable(ctx: DecisionContext, c: Settings) -> tuple[bool, str]:
     return True, "stable across required snapshots"
 
 
+#: Gates whose failure *explains* the others. A liquidity-pool share has no
+#: pool and one holder by construction, so leading the rejection with
+#: "liquidity_usd unavailable" sends an operator to check an API that is working
+#: fine. The structural fact goes first; the consequences follow.
+ROOT_CAUSE_GATES = ("tradeable_token", "contract_verified", "contract_flags")
+
+
+def root_cause_first(results):
+    """Order hard failures so the explanation precedes its symptoms.
+
+    Stable within each group, so the existing ordering is otherwise preserved.
+    """
+    rank = {name: i for i, name in enumerate(ROOT_CAUSE_GATES)}
+    return sorted(results, key=lambda g: rank.get(g.name, len(rank)))
+
+
 def decide(
     snapshot: NormalizedSnapshot,
     gates: list[GateResult],
@@ -65,7 +81,7 @@ def decide(
 
     # 1 — hard failures are terminal.
     if buckets["hard"]:
-        reasons = "; ".join(g.reason for g in buckets["hard"])
+        reasons = "; ".join(g.reason for g in root_cause_first(buckets["hard"]))
         return Decision(state=DecisionState.REJECT, score=score, gates=gates,
                         reason=f"HARD gate failure: {reasons}", hard_fail=True)
 

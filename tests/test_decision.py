@@ -164,3 +164,38 @@ def test_mid_score_alerts_but_does_not_buy(now, settings):
 )
 def test_state_ordering(state, expected_rank):
     assert state.rank == expected_rank
+
+
+# ------------------------------------------------------- root-cause ordering
+def test_structural_failure_is_reported_before_its_symptoms(now, settings):
+    """A pool share has no pool and one holder by construction. Leading the
+    rejection with "liquidity_usd unavailable" sends an operator to check an API
+    that is working perfectly."""
+    snap = make_snapshot(
+        now, contract_flags=["NOT_A_TRADEABLE_TOKEN:LP_SHARE"],
+        liquidity_usd=None, slippage_bps=None, unique_holders=1,
+        top1_holder_pct=100.0, top10_holder_pct=100.0,
+    )
+    d = run(snap, settings)
+    assert d.state == DecisionState.REJECT
+    body = d.reason.split("HARD gate failure: ", 1)[1]
+    assert body.startswith("not a tradeable token"), body[:120]
+
+
+def test_ordering_does_not_drop_or_duplicate_any_failure(now, settings):
+    from app.pipeline.decision import root_cause_first
+    from app.pipeline.risk import summarize
+
+    snap = make_snapshot(now, contract_flags=["NOT_A_TRADEABLE_TOKEN:LP_SHARE"],
+                         liquidity_usd=None, slippage_bps=None, top1_holder_pct=99.0)
+    hard = summarize(evaluate_gates(snap, settings))["hard"]
+    assert sorted(g.name for g in root_cause_first(hard)) == sorted(g.name for g in hard)
+
+
+def test_ordering_is_a_no_op_when_no_root_cause_gate_failed(now, settings):
+    from app.pipeline.decision import root_cause_first
+    from app.pipeline.risk import summarize
+
+    snap = make_snapshot(now, top1_holder_pct=45.0, liquidity_usd=1_000.0)
+    hard = summarize(evaluate_gates(snap, settings))["hard"]
+    assert [g.name for g in root_cause_first(hard)] == [g.name for g in hard]

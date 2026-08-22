@@ -66,7 +66,33 @@ FLAGGED_SELECTORS = {
     "751039fc": "MUTABLE_LIMITS",
 }
 
+# Interface fingerprints that say *what kind of contract this is*, rather than
+# what it is allowed to do. A contract answering token0()/token1() is a
+# liquidity-pool share; one answering asset() is an ERC-4626 vault receipt.
+# Their "holders" and "supply" mean something entirely different from a
+# tradeable token's — a pair token legitimately has one holder at 100%, and
+# screening it as if it were a memecoin produces nonsense.
+INTERFACE_SELECTORS = {
+    "LP_SHARE": ("0dfe1681", "d21220a7"),      # token0(), token1()
+    "VAULT_SHARE": ("38d52e0f",),              # asset()  — ERC-4626
+}
+
 LOG_CHUNK_BLOCKS = 2000
+
+
+def classify_interface(runtime_code: str) -> str:
+    """PLAIN / LP_SHARE / VAULT_SHARE from a runtime-bytecode scan.
+
+    Presence of a selector is evidence the function exists; absence is not
+    proof it does not (a proxy hides its implementation). This only ever
+    classifies on *presence*, so a proxy degrades to PLAIN rather than to a
+    wrong answer.
+    """
+    body = (runtime_code or "").lower()
+    for kind, selectors in INTERFACE_SELECTORS.items():
+        if all(sel in body for sel in selectors):
+            return kind
+    return "PLAIN"
 
 
 def _hex_to_int(h: Any) -> int | None:
@@ -212,6 +238,13 @@ class RobinhoodNodeClient(BaseHTTPClient):
 
         if detail["code_size_bytes"] and detail["code_size_bytes"] < 500:
             flags.append("SUSPICIOUSLY_SMALL_BYTECODE")
+
+        # Free: the runtime code is already in hand, so identifying pair tokens
+        # and vault receipts costs no extra RPC call.
+        kind = classify_interface(body)
+        detail["token_kind"] = kind
+        if kind != "PLAIN":
+            flags.append(f"NOT_A_TRADEABLE_TOKEN:{kind}")
 
         return flags, detail
 
