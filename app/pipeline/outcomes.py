@@ -53,23 +53,48 @@ def _aware(d: dt.datetime) -> dt.datetime:
     return d if d.tzinfo else d.replace(tzinfo=dt.timezone.utc)
 
 
+#: A window counts as watched-to-the-end only if something was observed in its
+#: final stretch. Anything less means the token stopped being sampled partway,
+#: and the row's "peak" is really "peak before we looked away".
+TAIL_FRACTION = 0.25
+
+
 @dataclass
 class Window:
     base: TokenSnapshot
     horizon: str
     following: list[TokenSnapshot]
-    complete: bool
+
+
+def window_coverage(window: Window) -> tuple[float, bool]:
+    """(coverage_pct, complete) for a window.
+
+    `complete` was previously passed in as a literal True by the only caller, so
+    every row claimed a fully-watched window — including rows where the token
+    vanished and nothing at all was observed. A model filtering on it would have
+    kept exactly the censored rows it needed to drop.
+    """
+    span = float(HORIZONS[window.horizon])
+    if not window.following or span <= 0:
+        return 0.0, False
+    base_at = _aware(window.base.captured_at)
+    last_at = max(_aware(s.captured_at) for s in window.following)
+    reach = (last_at - base_at).total_seconds()
+    coverage = max(0.0, min(reach / span, 1.0)) * 100.0
+    return round(coverage, 2), coverage >= (1.0 - TAIL_FRACTION) * 100.0
 
 
 def measure(window: Window) -> dict[str, object]:
     """Reduce a window of subsequent snapshots to one labelled row."""
     base_price = window.base.price_usd
     prices = [(s, s.price_usd) for s in window.following if s.price_usd and s.price_usd > 0]
+    coverage, complete = window_coverage(window)
 
     row: dict[str, object] = {
         "base_price": base_price,
         "observations": len(prices),
-        "window_complete": window.complete,
+        "window_complete": complete,
+        "coverage_pct": coverage,
         "max_price": None, "min_price": None,
         "max_return_pct": None, "min_return_pct": None, "end_return_pct": None,
         "reached_2x": None, "reached_5x": None, "reached_10x": None,
@@ -128,7 +153,6 @@ def label_snapshots(session: Session, *, now: dt.datetime | None = None,
     instead of stalling one.
     """
     now = now or utcnow()
-    oldest_window = max(HORIZONS.values())
     cutoff = now - dt.timedelta(seconds=min(HORIZONS.values()))
 
     candidates = session.execute(
@@ -163,12 +187,20 @@ def label_snapshots(session: Session, *, now: dt.datetime | None = None,
 
     for token_id, items in by_token.items():
         earliest = min(_aware(s.captured_at) for s, _ in items)
+        # Bound by the latest window actually being labelled. Using
+        # `earliest + max(horizon)` truncated the window of every base later
+        # than the earliest one: a 50x occurring inside a later snapshot's 7d
+        # window fell outside the query and was recorded as zero observations.
+        latest_end = max(
+            _aware(snap.captured_at) + dt.timedelta(seconds=HORIZONS[h])
+            for snap, horizons in items for h in horizons
+        )
         series = session.execute(
             select(TokenSnapshot)
             .where(
                 TokenSnapshot.token_id == token_id,
                 TokenSnapshot.captured_at >= earliest,
-                TokenSnapshot.captured_at <= earliest + dt.timedelta(seconds=oldest_window),
+                TokenSnapshot.captured_at <= latest_end,
             )
             .order_by(TokenSnapshot.captured_at)
         ).scalars().all()
@@ -181,8 +213,7 @@ def label_snapshots(session: Session, *, now: dt.datetime | None = None,
                     s for s in series
                     if s.id != snap.id and base_at < _aware(s.captured_at) <= end
                 ]
-                row = measure(Window(base=snap, horizon=horizon,
-                                     following=following, complete=True))
+                row = measure(Window(base=snap, horizon=horizon, following=following))
                 session.add(SnapshotOutcome(
                     snapshot_id=snap.id, token_id=token_id, horizon=horizon, **row))
                 written += 1

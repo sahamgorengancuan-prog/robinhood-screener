@@ -28,8 +28,8 @@ class FakeSnap:
         self.token_id = 1
 
 
-def win(base, following, complete=True):
-    return Window(base=base, horizon="1h", following=following, complete=complete)
+def win(base, following, horizon="1h"):
+    return Window(base=base, horizon=horizon, following=following)
 
 
 # ------------------------------------------------------------------- measure
@@ -182,8 +182,18 @@ def test_labelling_covers_rejected_tokens_too(tmp_path, monkeypatch):
     with db.session_scope() as s:
         rows = s.query(SnapshotOutcome).all()
         assert rows, "no outcome rows written"
-        assert all(r.window_complete for r in rows)
         assert any(r.max_return_pct and r.max_return_pct > 0 for r in rows)
+
+        # Sampling stops at t+120m, so a 1h window opened early is watched to
+        # its end while a 6h window is not. Both are labelled; only one claims
+        # to be complete. Previously every row claimed it.
+        by_h = {}
+        for r in rows:
+            by_h.setdefault(r.horizon, []).append(r)
+        assert any(r.window_complete for r in by_h["1h"]), "1h windows were fully observed"
+        assert not any(r.window_complete for r in by_h.get("6h", [])), \
+            "a 6h window cannot be complete when sampling stopped after 2h"
+        assert all(0.0 <= r.coverage_pct <= 100.0 for r in rows)
 
     db.reset_engine()
     reload_settings()
@@ -220,3 +230,80 @@ def test_labelling_is_idempotent(tmp_path, monkeypatch):
 
     db.reset_engine()
     reload_settings()
+
+
+# --------------------------------------------------- window bounds & coverage
+def test_a_later_snapshots_window_is_not_truncated(tmp_path, monkeypatch):
+    """Regression: the series was queried only up to `earliest + max(horizon)`,
+    so a base captured later had its window cut short. A 50x that happened
+    inside a 7d window was recorded as zero observations — silently destroying
+    the one part of the dataset whose cost is calendar time."""
+    from app import db
+    from app.config import reload_settings
+    from app.models import SnapshotOutcome, Token, TokenSnapshot
+    from app.pipeline.outcomes import label_snapshots
+
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path}/t.db")
+    reload_settings()
+    db.reset_engine()
+    db.init_db()
+
+    start = dt.datetime(2026, 1, 1, tzinfo=dt.timezone.utc)
+    with db.session_scope() as s:
+        tok = Token(chain="robinhood", address="0x" + "bb" * 20, symbol="LATE")
+        s.add(tok)
+        s.flush()
+        for days, price in [(0, 1.0), (3, 1.0), (9, 50.0), (10, 50.0)]:
+            s.add(TokenSnapshot(token_id=tok.id, captured_at=start + dt.timedelta(days=days),
+                                price_usd=price, liquidity_usd=10_000.0))
+
+    with db.session_scope() as s:
+        label_snapshots(s, now=start + dt.timedelta(days=11))
+
+    with db.session_scope() as s:
+        base = s.query(TokenSnapshot).order_by(TokenSnapshot.captured_at).all()[1]
+        row = (s.query(SnapshotOutcome)
+               .filter_by(snapshot_id=base.id, horizon="7d").one())
+        # base at day 3; the 50x at day 9 is inside its 7d window (ends day 10)
+        assert row.observations >= 2
+        assert row.max_return_pct == pytest.approx(4900.0)
+        assert row.reached_10x is True
+
+    db.reset_engine()
+    reload_settings()
+
+
+def test_a_token_that_stops_being_sampled_is_not_marked_complete():
+    """The censoring trap: nothing observed, yet the row used to claim a fully
+    watched window, so filtering on window_complete kept exactly the rows a
+    model has to drop."""
+    from app.pipeline.outcomes import window_coverage
+
+    base = FakeSnap(0, price=1.0)
+    coverage, complete = window_coverage(win(base, []))
+    assert coverage == 0.0 and complete is False
+
+    row = measure(win(base, []))
+    assert row["observations"] == 0
+    assert row["window_complete"] is False
+    assert row["max_return_pct"] is None, "an unobserved window must not read as flat"
+
+
+def test_coverage_tracks_how_far_observation_reached():
+    from app.pipeline.outcomes import window_coverage
+
+    base = FakeSnap(0, price=1.0)
+    # 1h window; last observation at 15 minutes = 25% reach
+    assert window_coverage(win(base, [FakeSnap(15, 1.0)])) == (25.0, False)
+    # observed to 50 of 60 minutes -> past the tail threshold
+    coverage, complete = window_coverage(win(base, [FakeSnap(15, 1.0), FakeSnap(50, 1.0)]))
+    assert coverage == pytest.approx(83.33, abs=0.01)
+    assert complete is True
+
+
+def test_coverage_never_exceeds_one_hundred_percent():
+    from app.pipeline.outcomes import window_coverage
+
+    base = FakeSnap(0, price=1.0)
+    coverage, complete = window_coverage(win(base, [FakeSnap(600, 1.0)]))
+    assert coverage == 100.0 and complete is True

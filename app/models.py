@@ -258,6 +258,10 @@ class SnapshotOutcome(Base):
     rug_suspected: Mapped[bool | None] = mapped_column(Boolean)
 
     observations: Mapped[int] = mapped_column(Integer, default=0)
+    #: How far into the window observation actually reached, 0-100. A label
+    #: whose token stopped being sampled after 10 minutes of a 7-day window is
+    #: not wrong so much as unusable, and a raw observation count cannot say so.
+    coverage_pct: Mapped[float] = mapped_column(Float, default=0.0)
     window_complete: Mapped[bool] = mapped_column(Boolean, default=False)
     computed_at: Mapped[dt.datetime] = mapped_column(
         DateTime(timezone=True), default=utcnow, index=True)
