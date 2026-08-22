@@ -766,10 +766,23 @@ def do_save_setup(*values):
     simulated = str(form.get("OKX_SIMULATED", "")).strip().lower()
 
     current = envfile.read_env(ENV_PATH)
-    updates = envfile.merge_form(current, form)
+    updates, kept_secrets = envfile.merge_form(current, form)
 
     if not updates:
-        return banner(WARN, "Tidak ada perubahan untuk disimpan."), gr.update()
+        # "Nothing changed" is a claim about the operator's input, so it has to
+        # say what it compared against. Reporting a bare no-op sent an operator
+        # hunting for a save bug when the form and the file genuinely matched —
+        # or worse, when a blank secret had been quietly preserved.
+        msg = (f"Tidak ada perubahan untuk disimpan — isian form sudah sama persis dengan "
+               f"<code>{ENV_PATH.name}</code> ({len(current)} kunci terbaca).")
+        if kept_secrets:
+            msg += ("<br>Secret yang dibiarkan kosong tetap dipertahankan: "
+                    f"<b>{', '.join(sorted(kept_secrets))}</b>. Untuk menggantinya, "
+                    "tempel nilai barunya — mengosongkan field tidak menghapus secret.")
+        msg += ("<br><span style='opacity:.75'>Tab Setup hanya mengelola "
+                f"{len(SETUP_FIELDS)} kunci. Threshold risiko, interval, dan digest "
+                f"diubah langsung di <code>{ENV_PATH.name}</code>.</span>")
+        return banner(WARN, msg), gr.update()
 
     try:
         changed = envfile.write_env(ENV_PATH, updates)
@@ -779,7 +792,13 @@ def do_save_setup(*values):
     reload_settings()
     c = get_settings()
 
+    cleared = [k for k in changed if not updates.get(k)]
     msg = f"Tersimpan ke <code>.env</code>: <b>{', '.join(changed)}</b>"
+    if cleared:
+        msg += f"<br>Dikosongkan: <b>{', '.join(cleared)}</b>"
+    if kept_secrets:
+        msg += (f"<br><span style='opacity:.75'>Secret dipertahankan (field dibiarkan kosong): "
+                f"{', '.join(sorted(kept_secrets))}</span>")
     kind = OK
     if requested_mode == "LIVE" and simulated in ("false", "0", "no"):
         kind = WARN
@@ -1008,10 +1027,12 @@ def build_ui() -> gr.Blocks:
                         label="Alamat token (opsional — mengaktifkan uji ERC-20, scan kontrak, verifikasi, price-info)",
                         placeholder="0x…", scale=4,
                     )
-                    ping_btn = gr.Button("⚡ Ping RPC", scale=1)
-                    test_btn = gr.Button("🩺 Test Semua Koneksi", variant="primary", scale=1)
+                    # One button on purpose. The separate "Ping RPC" did a strict
+                    # subset of check_node_rpc, so it could only ever agree with
+                    # this one or confuse the operator by disagreeing.
+                    test_btn = gr.Button("🩺 Test Semua Koneksi & API", variant="primary", scale=2)
 
-                conn_banner = gr.HTML(banner(SKIP, "Belum diuji. Klik <b>Test Semua Koneksi</b>."))
+                conn_banner = gr.HTML(banner(SKIP, "Belum diuji. Klik <b>Test Semua Koneksi &amp; API</b>."))
                 conn_table = gr.Dataframe(
                     headers=["Status", "Grup", "Pemeriksaan", "Latensi", "Ringkasan", "Tindakan"],
                     datatype=["str"] * 6, interactive=False, wrap=True, value=[],
@@ -1032,7 +1053,6 @@ def build_ui() -> gr.Blocks:
                     alert_btn = gr.Button("📨 Kirim alert uji ke semua sink")
                 alert_result = gr.HTML()
 
-                ping_btn.click(guarded(do_quick_ping, ERROR_SLOT), [rpc_url], [conn_banner])
                 test_btn.click(guarded(do_connection_test, ERROR_SLOT, [], {}, ""),
                                [probe_addr] + creds,
                                [conn_banner, conn_table, conn_detail, conn_fixes])

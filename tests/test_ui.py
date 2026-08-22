@@ -317,3 +317,102 @@ def test_saving_live_mode_with_real_money_warns_loudly(tmp_path, monkeypatch):
     banner_html, _ = ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
     assert "uang sungguhan" in banner_html.lower()
     assert "banner-warn" in banner_html
+
+
+# ------------------------------------------------- setup save (round-tripping)
+def test_clearing_a_field_actually_saves(tmp_path, monkeypatch):
+    """Reported symptom: "I clearly changed something and it says nothing
+    changed". Clearing a value was silently refused and then reported as a
+    no-op."""
+    import app.ui.gradio_app as ui
+    from app.ui.envfile import read_env
+
+    env = tmp_path / ".env"
+    env.write_text("ALERT_WEBHOOK_URL=https://hooks.example/old\nRUN_MODE=ALERT_ONLY\n",
+                   encoding="utf-8")
+    monkeypatch.setattr(ui, "ENV_PATH", env)
+
+    form = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    form["ALERT_WEBHOOK_URL"] = ""
+    html, _ = ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
+
+    assert "Tersimpan" in html
+    assert "Dikosongkan" in html
+    assert read_env(env)["ALERT_WEBHOOK_URL"] == ""
+
+
+def test_a_genuine_no_op_explains_what_it_compared(tmp_path, monkeypatch):
+    """"Nothing changed" is a claim about the operator's input, so it has to say
+    what it was compared against."""
+    import app.ui.gradio_app as ui
+
+    env = tmp_path / ".env"
+    env.write_text("RUN_MODE=ALERT_ONLY\nOKX_API_KEY=stored-key\n", encoding="utf-8")
+    monkeypatch.setattr(ui, "ENV_PATH", env)
+
+    # The first save materialises the form's defaults into a minimal .env, so
+    # the genuine no-op is the *second* one. That doubles as an idempotency
+    # check: saving twice without touching anything must not churn the file.
+    form = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
+
+    form = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    html, _ = ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
+
+    assert "Tidak ada perubahan" in html
+    assert ".env" in html
+    assert "kunci terbaca" in html
+    # and it must say the stored secret was preserved, not silently ignored
+    assert "OKX_API_KEY" in html
+
+
+def test_saving_never_wipes_a_stored_secret_left_blank(tmp_path, monkeypatch):
+    import app.ui.gradio_app as ui
+    from app.ui.envfile import read_env
+
+    env = tmp_path / ".env"
+    env.write_text("OKX_API_SECRET=do-not-lose-me\nRUN_MODE=ALERT_ONLY\n", encoding="utf-8")
+    monkeypatch.setattr(ui, "ENV_PATH", env)
+
+    form = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    form["OKX_API_SECRET"] = ""            # operator leaves it blank
+    form["RH_NODE_RPC_URL"] = "https://rpc.test/v2"
+    ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
+
+    assert read_env(env)["OKX_API_SECRET"] == "do-not-lose-me"
+
+
+def test_run_mode_cannot_be_blanked(tmp_path, monkeypatch):
+    import app.ui.gradio_app as ui
+    from app.ui.envfile import read_env
+
+    env = tmp_path / ".env"
+    env.write_text("RUN_MODE=PAPER\n", encoding="utf-8")
+    monkeypatch.setattr(ui, "ENV_PATH", env)
+
+    form = dict(zip(ui.SETUP_FIELDS, ui.load_setup_values()))
+    form["RUN_MODE"] = ""
+    ui.do_save_setup(*[form[k] for k in ui.SETUP_FIELDS])
+    assert read_env(env)["RUN_MODE"] == "PAPER"
+
+
+# ----------------------------------------------------- one connection button
+def test_there_is_a_single_connection_test_button():
+    """The separate Ping RPC did a strict subset of check_node_rpc, so it could
+    only agree with the full test or confuse the operator by disagreeing."""
+    import inspect
+
+    import app.ui.gradio_app as ui
+
+    src = inspect.getsource(ui.build_ui)
+    assert "ping_btn" not in src
+    assert src.count("gr.Button(\"🩺") == 1
+
+
+def test_the_full_test_still_covers_the_node():
+    """Removing the ping must not remove RPC coverage."""
+    import inspect
+
+    import app.diagnostics as diag
+
+    assert "check_node_rpc" in inspect.getsource(diag.run_all_checks)

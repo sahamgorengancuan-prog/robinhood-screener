@@ -139,7 +139,7 @@ Three things make it genuinely useful rather than decorative:
    ALERT_ONLY"*, *"Ready for PAPER"*, or *"Not ready — every token will report
    missing data and stay in WATCH."*
 
-Also on this tab: a one-click **RPC ping**, and a **test alert** that pushes a
+Also on this tab: a **test alert** that pushes a
 real message through every configured sink so you find out the webhook is wrong
 now rather than during a live signal.
 

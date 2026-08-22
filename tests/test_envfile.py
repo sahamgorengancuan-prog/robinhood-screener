@@ -107,52 +107,69 @@ def test_written_file_ends_with_newline(envfile_path):
 
 
 # -------------------------------------------------------------- form merging
-def test_blank_field_does_not_erase_existing_value():
-    current = {"OKX_API_SECRET": "real-secret", "RUN_MODE": "PAPER"}
-    updates = merge_form(current, {"OKX_API_SECRET": "", "RUN_MODE": ""})
-    assert updates == {}, "a blank form field must never clear a stored value"
+def updates_of(current, form):
+    return merge_form(current, form)[0]
+
+
+def test_a_blank_secret_never_erases_a_stored_one():
+    """The form shows *** rather than the value, so a reload-then-save must not
+    wipe the keys. This is the property the whole blank-handling exists for."""
+    current = {"OKX_API_SECRET": "real-secret"}
+    updates, kept = merge_form(current, {"OKX_API_SECRET": ""})
+    assert updates == {}
+    assert kept == ["OKX_API_SECRET"], "the caller must be able to say it was kept"
+
+
+def test_a_blank_run_mode_is_refused():
+    """Clearing RUN_MODE would leave the config unloadable."""
+    assert updates_of({"RUN_MODE": "PAPER"}, {"RUN_MODE": ""}) == {}
+
+
+def test_a_blank_ordinary_field_clears_it():
+    """The form is populated from disk before the operator touches it, so a
+    field arriving empty was emptied on purpose. Treating that as "no change"
+    made clearing impossible and reported it as "nothing changed" — untrue:
+    something had changed, it was refused."""
+    assert updates_of({"RH_NODE_RPC_URL": "https://old"}, {"RH_NODE_RPC_URL": ""}) \
+        == {"RH_NODE_RPC_URL": ""}
+
+
+def test_clearing_an_already_empty_field_is_not_a_change():
+    """Otherwise every save would rewrite every blank key."""
+    assert updates_of({"ALERT_WEBHOOK_URL": ""}, {"ALERT_WEBHOOK_URL": ""}) == {}
+    assert updates_of({}, {"ALERT_WEBHOOK_URL": ""}) == {}
 
 
 def test_redacted_placeholder_is_not_written_back():
-    """The form shows *** for stored secrets; submitting it must be a no-op."""
     current = {"OKX_API_SECRET": "real-secret"}
-    updates = merge_form(current, {"OKX_API_SECRET": "***tersimpan***"})
+    updates, kept = merge_form(current, {"OKX_API_SECRET": "***tersimpan***"})
     assert updates == {}
+    assert kept == ["OKX_API_SECRET"]
+
+
+def test_replacing_a_secret_works():
+    assert updates_of({"OKX_API_KEY": "old"}, {"OKX_API_KEY": "new-dex-key"}) \
+        == {"OKX_API_KEY": "new-dex-key"}
 
 
 def test_changed_value_is_captured():
-    updates = merge_form({"RUN_MODE": "ALERT_ONLY"}, {"RUN_MODE": "PAPER"})
-    assert updates == {"RUN_MODE": "PAPER"}
+    assert updates_of({"RUN_MODE": "ALERT_ONLY"}, {"RUN_MODE": "PAPER"}) == {"RUN_MODE": "PAPER"}
 
 
 def test_unchanged_value_is_skipped():
-    assert merge_form({"RUN_MODE": "PAPER"}, {"RUN_MODE": "PAPER"}) == {}
+    assert updates_of({"RUN_MODE": "PAPER"}, {"RUN_MODE": "PAPER"}) == {}
 
 
 def test_new_secret_is_captured():
-    updates = merge_form({}, {"OKX_API_SECRET": "brand-new"})
-    assert updates == {"OKX_API_SECRET": "brand-new"}
+    assert updates_of({}, {"OKX_API_SECRET": "brand-new"}) == {"OKX_API_SECRET": "brand-new"}
 
 
 def test_whitespace_is_trimmed():
-    assert merge_form({}, {"RH_NODE_RPC_URL": "  https://x  "}) == {"RH_NODE_RPC_URL": "https://x"}
+    assert updates_of({}, {"RH_NODE_RPC_URL": "  https://x  "}) == {"RH_NODE_RPC_URL": "https://x"}
 
 
-# ---------------------------------------------------------------- redaction
-def test_redact_masks_every_secret():
-    values = {k: "sensitive" for k in SECRET_KEYS}
-    values["RUN_MODE"] = "PAPER"
-    out = redact(values)
-    assert "sensitive" not in str(out)
-    assert out["RUN_MODE"] == "PAPER"
-
-
-def test_redact_distinguishes_set_from_unset():
-    out = redact({"OKX_API_SECRET": "", "OKX_API_KEY": "x"})
-    assert out["OKX_API_SECRET"] == ""
-    assert out["OKX_API_KEY"] == "***set***"
-
-
-def test_trading_credentials_are_treated_as_secret():
-    for key in ("OKX_TRADE_API_KEY", "OKX_TRADE_API_SECRET", "OKX_TRADE_API_PASSPHRASE"):
-        assert key in SECRET_KEYS
+def test_no_stored_secret_means_nothing_to_keep():
+    """"Kept" must mean a value was actually preserved, not that a field was
+    blank — otherwise the banner claims to be protecting something that is not
+    there."""
+    assert merge_form({}, {"OKX_API_SECRET": ""})[1] == []

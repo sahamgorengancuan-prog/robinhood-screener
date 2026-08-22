@@ -96,23 +96,45 @@ def write_env(path: str | Path, updates: dict[str, str], *, backup: bool = True)
     return changed
 
 
-def merge_form(current: dict[str, str], form: dict[str, str]) -> dict[str, str]:
+#: Settings that must never be written blank. Clearing RUN_MODE would leave the
+#: config unloadable, and a form glitch must not be able to do that.
+NEVER_BLANK = {"RUN_MODE", "OKX_SIMULATED", "RH_DATA_ENABLED", "RH_CHAIN_ID"}
+
+
+def merge_form(current: dict[str, str], form: dict[str, str]) -> tuple[dict[str, str], list[str]]:
     """Build the update set from a form submission.
 
-    A blank secret field means "keep what is already there". A blank non-secret
-    field is treated the same way, because the form cannot distinguish "cleared
-    on purpose" from "never loaded".
+    Returns `(updates, kept_secrets)` — the second list names secrets left blank
+    and therefore preserved, so the caller can say so instead of reporting a
+    silent no-op.
+
+    A blank **secret** means "keep what is already there": the form shows
+    `***tersimpan***` rather than the value, so a page reload followed by a save
+    must not wipe the keys.
+
+    A blank **non-secret** means "clear it". The form is always populated from
+    disk before the operator touches it, so a field that arrives empty was
+    emptied on purpose. Treating that as "no change" made clearing a value
+    impossible and reported it as "nothing changed", which was untrue —
+    something had changed, it was refused.
     """
     updates: dict[str, str] = {}
+    kept_secrets: list[str] = []
     for key, value in form.items():
         value = "" if value is None else str(value).strip()
-        if not value:
+
+        if key in SECRET_KEYS:
+            if not value or value.startswith("***"):
+                if current.get(key, ""):
+                    kept_secrets.append(key)
+                continue
+
+        if not value and key in NEVER_BLANK:
             continue
-        if key in SECRET_KEYS and value.startswith("***"):
-            continue  # the redacted placeholder was sent back unchanged
+
         if current.get(key, "") != value:
             updates[key] = value
-    return updates
+    return updates, kept_secrets
 
 
 def redact(values: dict[str, str]) -> dict[str, str]:
