@@ -217,6 +217,11 @@ class Settings(BaseSettings):
     alert_console: bool = True
     alert_file: str = "./data/alerts.log"
     alert_webhook_url: str = ""
+    # End-of-cycle digest. On by default: silence from a screener that rejects
+    # everything is indistinguishable from a screener that has stopped running.
+    cycle_digest_enabled: bool = True
+    cycle_digest_top_n: int = 3
+
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
     alert_min_state: str = "ALERT"

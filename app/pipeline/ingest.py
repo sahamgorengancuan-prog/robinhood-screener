@@ -38,6 +38,7 @@ from app.pipeline.risk import evaluate_gates, summarize
 from app.pipeline.scoring import score_snapshot
 from app.schemas import DecisionState, NormalizedSnapshot, TokenRef
 from app.services import Services, build_services
+from app.alerts.digest import send_digest
 from app.alerts.sinks import dispatch
 
 log = logging.getLogger(__name__)
@@ -761,6 +762,16 @@ async def run_cycle(svc: Services | None = None) -> dict[str, Any]:
         }
         summary["silent_sources"] = report.silent_sources()
         log.info("cycle done in %.1fs: %s", summary["duration_s"], summary["by_state"])
+
+        # A report, not a signal: it creates no Alert row, dedupes against
+        # nothing, and cannot influence a decision. It exists so that a cycle
+        # which rejected everything is still visibly a cycle that ran.
+        summary["digest_sent"] = await send_digest(
+            results, c,
+            tokens_screened=len(results),
+            duration_s=summary["duration_s"],
+            dead_connections=summary.get("dead_connections") or [],
+        )
         return summary
     finally:
         if own:
